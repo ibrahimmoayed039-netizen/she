@@ -70,11 +70,20 @@ fun compressImage(ctx: Context, uri: Uri): String {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val auth = FirebaseAuth.getInstance()
-        if (auth.currentUser == null) auth.signInAnonymously()
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                MaterialTheme { App() }
+                MaterialTheme {
+                    var ready by remember { mutableStateOf(FbConfig.init(applicationContext)) }
+                    if (ready) {
+                        LaunchedEffect(Unit) {
+                            val a = FirebaseAuth.getInstance()
+                            if (a.currentUser == null) a.signInAnonymously()
+                        }
+                        App()
+                    } else {
+                        SetupScreen { ready = FbConfig.init(applicationContext) }
+                    }
+                }
             }
         }
     }

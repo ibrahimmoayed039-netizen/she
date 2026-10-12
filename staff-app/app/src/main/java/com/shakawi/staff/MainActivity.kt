@@ -61,7 +61,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                MaterialTheme { Root() }
+                MaterialTheme {
+                    var ready by remember { mutableStateOf(FbConfig.init(applicationContext)) }
+                    if (ready) Root() else SetupScreen { ready = FbConfig.init(applicationContext) }
+                }
             }
         }
     }
@@ -113,6 +116,8 @@ fun Login() {
                 }
             }
         ) { Text(if (busy) "جارٍ الدخول..." else "دخول") }
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        TextButton(onClick = { FbConfig.reset(ctx) }) { Text("تغيير إعدادات الاتصال بقاعدة البيانات") }
     }
 }
 

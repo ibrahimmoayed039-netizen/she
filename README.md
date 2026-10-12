@@ -1,23 +1,22 @@
 # نظام الشكاوى (تطبيق المواطن + تطبيق الموظف + برنامج الحاسوب)
 
-## 1) إعداد Firebase (مرة واحدة)
-1. أنشئ مشروعاً في https://console.firebase.google.com
+## 1) إعداد Firebase (يفعله كل زبون مرة واحدة بحسابه)
+1. أنشئ مشروعاً في https://console.firebase.google.com (أوقف Gemini وGoogle Analytics، غير مطلوبين).
 2. **Authentication ← Sign-in method**: فعّل **Anonymous** و **Email/Password**.
 3. **Firestore Database**: أنشئ قاعدة بيانات، ثم من تبويب Rules الصق محتوى `firestore.rules` واضغط Publish.
-4. أضف تطبيقي أندرويد للمشروع بهذين الاسمين بالضبط:
-   - `com.shakawi.citizen`  ← نزّل ملفه `google-services.json`
-   - `com.shakawi.staff`    ← نزّل ملفه `google-services.json`
-5. ضع الملفين داخل المشروع قبل الرفع:
-   - ملف `com.shakawi.citizen` ← `citizen-app/app/google-services.json`
-   - ملف `com.shakawi.staff` ← `staff-app/app/google-services.json`
+4. من Project settings أضف **تطبيق أندرويد واحداً** (أي اسم حزمة) ونزّل `google-services.json`.
+5. **تطبيق المواطن (للتوزيع على الجمهور)**: حوّل `google-services.json` إلى Base64 (PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("google-services.json"))`) وأضفه في GitHub ← Settings ← Secrets and variables ← Actions باسم `CITIZEN_GOOGLE_SERVICES`. عند البناء يُدمج داخل الـ APK فيعمل مباشرة دون أي خطوة من المواطن. لكل زبون جديد غيّر قيمة السر وشغّل Actions من جديد.
+6. **تطبيق الموظف**: افتحه وفي شاشة «ربط قاعدة البيانات» اختر الملف (أو الصق محتواه)، مرة واحدة لكل جهاز. وزر «تغيير إعدادات الاتصال» في شاشة الدخول لتغيير المشروع.
 
-## 2) البناء
-ارفع محتويات المجلد إلى جذر المستودع (بما فيه المجلد المخفي `.github`) في فرع `main`، ثم من تبويب **Actions** ستجد 3 مهام. بعد نجاحها حمّل من الأسفل (Artifacts):
+## 2) البناء (مرة واحدة فقط لكل الزبائن)
+ارفع محتويات المجلد إلى جذر المستودع (بما فيه المجلد المخفي `.github`) في فرع `main`، ثم من تبويب **Actions** حمّل من Artifacts:
 - `citizen-app-apk`  (تطبيق المواطن)
 - `staff-app-apk`    (تطبيق الموظف)
 - `desktop-installer` (مثبّت برنامج الحاسوب .exe)
 
-> ملفات APK الناتجة موقّعة بمفتاح debug وتعمل للتثبيت المباشر. للنشر على Google Play تحتاج توقيع Release.
+الكود نفسه لجميع الزبائن، والذي يتغير فقط هو سر `CITIZEN_GOOGLE_SERVICES`. لا ترفع `google-services.json` إلى المستودع.
+
+> ملفات APK موقّعة بمفتاح debug وتعمل للتثبيت المباشر. للنشر على Google Play تحتاج توقيع Release.
 
 ## 3) حسابات الموظفين
 1. Firebase ← Authentication ← Users ← Add user (بريد + كلمة مرور).
