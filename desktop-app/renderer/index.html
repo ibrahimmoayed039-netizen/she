@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'">
+  <title>مركز الشكاوى</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav>
+    <button data-t="new" class="on">بانتظار التحليل</button>
+    <button data-t="routed">تم التوجيه</button>
+    <button data-t="settings">الإعدادات</button>
+  </nav>
+  <div id="log"></div>
+  <main id="view"></main>
+  <script src="renderer.js"></script>
+</body>
+</html>

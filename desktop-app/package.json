@@ -1,0 +1,25 @@
+{
+  "name": "complaints-desktop",
+  "version": "1.0.0",
+  "description": "Complaints analysis center",
+  "author": "Shakawi",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "firebase-admin": "^12.3.0"
+  },
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.shakawi.desktop",
+    "productName": "ComplaintsCenter",
+    "files": ["main.js", "preload.js", "renderer/**", "package.json"],
+    "win": { "target": "nsis", "signAndEditExecutable": false }
+  }
+}

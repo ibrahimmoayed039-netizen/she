@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function isStaff() {
+      return request.auth != null && exists(/databases/$(db)/documents/staff/$(request.auth.uid));
+    }
+    function myDept() {
+      return get(/databases/$(db)/documents/staff/$(request.auth.uid)).data.department;
+    }
+    match /staff/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+    }
+    match /complaints/{id} {
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'new'
+        && request.resource.data.department == '';
+      allow read: if request.auth != null
+        && (resource.data.userId == request.auth.uid
+            || (isStaff() && resource.data.department == myDept()));
+      allow update: if isStaff() && resource.data.department == myDept()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt']);
+    }
+  }
+}
