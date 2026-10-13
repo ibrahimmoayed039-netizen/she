@@ -28,6 +28,15 @@ function card(c) {
 }
 
 function renderSettings() {
+  const provider = h('select', {},
+    h('option', { value: 'claude' }, 'Claude (يحتاج مفتاح API ورصيد)'),
+    h('option', { value: 'local' }, 'محلي Ollama (مجاني، بدون إنترنت)'),
+    h('option', { value: 'hybrid' }, 'هجين: المحلي أولاً ثم Claude عند الشك أو الفشل'));
+  provider.value = settings.provider || 'claude';
+  const ollamaUrl = h('input', { type: 'text', value: settings.ollamaUrl || 'http://localhost:11434' });
+  const ollamaModel = h('input', { type: 'text', value: settings.ollamaModel || '', placeholder: 'الاسم كما يظهر في الأمر ollama list' });
+  const localImages = h('input', { type: 'checkbox', checked: !!settings.localImages });
+  const rules = h('textarea', { value: settings.rules || '', rows: 8, placeholder: 'اكتب هنا قواعد التوجيه، مثلاً: كسر الشارع والحفر → البلدية' });
   const key = h('input', { type: 'password', value: settings.apiKey || '' });
   const model = h('input', { type: 'text', value: settings.model || '' });
   const depts = h('textarea', { value: (settings.departments || []).join('\n') });
@@ -35,8 +44,14 @@ function renderSettings() {
   const path = h('span', {}, settings.serviceAccountPath || 'لم يُحدد بعد');
   return [
     h('div', { class: 'card' },
-      h('label', {}, 'مفتاح Claude API'), key,
+      h('label', {}, 'طريقة التحليل'), provider,
+      h('label', {}, 'مفتاح Claude API (للوضعين Claude والهجين)'), key,
       h('label', {}, 'اسم النموذج'), model,
+      h('label', {}, 'عنوان Ollama'), ollamaUrl,
+      h('label', {}, 'اسم نموذج Ollama'), ollamaModel,
+      h('label', {}, localImages, ' النموذج المحلي يدعم الصور (فعّلها فقط لنموذج يفهم الصور)'),
+      h('button', { class: 'act', onclick: () => window.api.testOllama() }, 'فحص اتصال Ollama'),
+      h('label', {}, 'تعليمات التوجيه (اشرح للنموذج أي شكوى تذهب لأي قسم)'), rules,
       h('label', {}, 'الأقسام (قسم في كل سطر — يجب أن تطابق أقسام الموظفين تماماً)'), depts,
       h('label', {}, auto, ' التحليل والتوجيه التلقائي للشكاوى الجديدة'),
       h('label', {}, 'مفتاح حساب خدمة Firebase (JSON)'),
@@ -46,7 +61,8 @@ function renderSettings() {
         class: 'act',
         onclick: async () => {
           settings = {
-            ...settings, apiKey: key.value.trim(), model: model.value.trim(), auto: auto.checked,
+            ...settings, provider: provider.value, rules: rules.value.trim(), ollamaUrl: ollamaUrl.value.trim(), ollamaModel: ollamaModel.value.trim(), localImages: localImages.checked,
+            apiKey: key.value.trim(), model: model.value.trim(), auto: auto.checked,
             departments: depts.value.split('\n').map((s) => s.trim()).filter(Boolean),
           };
           await window.api.setSettings(settings);

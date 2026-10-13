@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: (s) => ipcRenderer.invoke('settings:set', s),
   pickKey: () => ipcRenderer.invoke('key:pick'),
   connect: () => ipcRenderer.invoke('connect'),
+  testOllama: () => ipcRenderer.invoke('ollama:test'),
   analyze: (id) => ipcRenderer.invoke('analyze', id),
   onComplaints: (cb) => ipcRenderer.on('complaints', (_, d) => cb(d)),
   onLog: (cb) => ipcRenderer.on('log', (_, m) => cb(m)),
