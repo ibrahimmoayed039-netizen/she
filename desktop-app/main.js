@@ -167,7 +167,8 @@ async function analyze(id, force = false) {
 }
 
 ipcMain.handle('settings:get', () => store.store);
-ipcMain.handle('settings:set', (_, s) => { store.set(s); });
+// مسار مفتاح Firebase يُحفظ فقط عبر key:pick حتى لا تمسحه نسخة قديمة من الإعدادات
+ipcMain.handle('settings:set', (_, s) => { const { serviceAccountPath, ...rest } = s; store.set(rest); });
 ipcMain.handle('key:pick', async () => {
   const r = await dialog.showOpenDialog(win, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
   if (r.canceled) return store.get('serviceAccountPath');

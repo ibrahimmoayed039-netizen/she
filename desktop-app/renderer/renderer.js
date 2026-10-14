@@ -55,7 +55,7 @@ function renderSettings() {
       h('label', {}, 'الأقسام (قسم في كل سطر — يجب أن تطابق أقسام الموظفين تماماً)'), depts,
       h('label', {}, auto, ' التحليل والتوجيه التلقائي للشكاوى الجديدة'),
       h('label', {}, 'مفتاح حساب خدمة Firebase (JSON)'),
-      h('button', { class: 'act', onclick: async () => { path.textContent = await window.api.pickKey(); } }, 'اختيار الملف'), ' ', path,
+      h('button', { class: 'act', onclick: async () => { const p = await window.api.pickKey(); settings.serviceAccountPath = p; path.textContent = p || 'لم يُحدد بعد'; } }, 'اختيار الملف'), ' ', path,
       h('p', {}),
       h('button', {
         class: 'act',
