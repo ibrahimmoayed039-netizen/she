@@ -59,14 +59,19 @@ fun fmtTime(ms: Long): String =
     if (ms <= 0L) "-" else SimpleDateFormat("yyyy/MM/dd  hh:mm a", Locale.getDefault()).format(Date(ms))
 
 // يكتب حالة الموظف في قاعدة البيانات فتظهر فوراً في برنامج الحاسوب
-fun setStatus(id: String, status: String, reply: String) {
+fun setStatus(id: String, status: String, reply: String, onFail: (String) -> Unit = {}) {
+    val ref = FirebaseFirestore.getInstance().collection("complaints").document(id)
     val data = mutableMapOf<String, Any>(
         "status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp(),
         "handledBy" to (FirebaseAuth.getInstance().currentUser?.email ?: "")
     )
     if (status == "in_progress") data["startedAt"] = FieldValue.serverTimestamp()
     if (status == "resolved") data["resolvedAt"] = FieldValue.serverTimestamp()
-    FirebaseFirestore.getInstance().collection("complaints").document(id).update(data)
+    ref.update(data).addOnFailureListener {
+        // غالباً قواعد Firestore القديمة لا تسمح بالحقول الجديدة: نعيد المحاولة بالحقول الأساسية فقط
+        ref.update(mapOf("status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp()))
+            .addOnFailureListener { e -> onFail(e.message ?: "") }
+    }
 }
 
 // عند فتح الشكوى لأول مرة يُسجَّل وقت اطلاع الموظف
@@ -244,6 +249,10 @@ fun Main(depts: List<String>, email: String) {
 @Composable
 fun Detail(c: Complaint, onClose: () -> Unit) {
     var reply by remember { mutableStateOf(c.reply) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val onFail: (String) -> Unit = { m ->
+        android.widget.Toast.makeText(ctx, "تعذّر حفظ الحالة، تحقق من الاتصال والصلاحيات: $m", android.widget.Toast.LENGTH_LONG).show()
+    }
     LaunchedEffect(c.id) { if (c.status == "routed" && c.seenMs == 0L) markSeen(c.id) }
     val bmp = remember(c.id) {
         if (c.imageB64.isEmpty()) null else try {
@@ -267,8 +276,8 @@ fun Detail(c: Complaint, onClose: () -> Unit) {
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (c.status == "routed") Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
-                if (c.status != "resolved") Button(onClick = { setStatus(c.id, "resolved", reply); onClose() }) { Text("تم الحل") }
+                if (c.status == "routed") Button(onClick = { setStatus(c.id, "in_progress", reply, onFail); onClose() }) { Text("بدء المعالجة") }
+                if (c.status != "resolved") Button(onClick = { setStatus(c.id, "resolved", reply, onFail); onClose() }) { Text("تم الحل") }
             }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("إغلاق") } }
