@@ -26,11 +26,15 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class Complaint(
     val id: String, val title: String, val text: String, val department: String,
     val priority: String, val summary: String, val status: String, val reply: String,
-    val createdMs: Long, val imageB64: String, val name: String, val phone: String
+    val createdMs: Long, val imageB64: String, val name: String, val phone: String,
+    val seenMs: Long
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -39,7 +43,8 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("aiSummary") ?: "", d.getString("status") ?: "new",
     d.getString("reply") ?: "",
     d.getTimestamp("createdAt")?.toDate()?.time ?: 0L,
-    d.getString("imageB64") ?: "", d.getString("name") ?: "", d.getString("phone") ?: ""
+    d.getString("imageB64") ?: "", d.getString("name") ?: "", d.getString("phone") ?: "",
+    d.getTimestamp("seenAt")?.toDate()?.time ?: 0L
 )
 
 fun priorityAr(p: String): String = when (p) {
@@ -50,9 +55,27 @@ fun priorityAr(p: String): String = when (p) {
     else -> "-"
 }
 
+fun fmtTime(ms: Long): String =
+    if (ms <= 0L) "-" else SimpleDateFormat("yyyy/MM/dd  hh:mm a", Locale.getDefault()).format(Date(ms))
+
+// يكتب حالة الموظف في قاعدة البيانات فتظهر فوراً في برنامج الحاسوب
 fun setStatus(id: String, status: String, reply: String) {
+    val data = mutableMapOf<String, Any>(
+        "status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp(),
+        "handledBy" to (FirebaseAuth.getInstance().currentUser?.email ?: "")
+    )
+    if (status == "in_progress") data["startedAt"] = FieldValue.serverTimestamp()
+    if (status == "resolved") data["resolvedAt"] = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id).update(data)
+}
+
+// عند فتح الشكوى لأول مرة يُسجَّل وقت اطلاع الموظف
+fun markSeen(id: String) {
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(
-        mapOf("status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp())
+        mapOf(
+            "seenAt" to FieldValue.serverTimestamp(),
+            "handledBy" to (FirebaseAuth.getInstance().currentUser?.email ?: "")
+        )
     )
 }
 
@@ -196,6 +219,7 @@ fun Main(depts: List<String>, email: String) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(c.title, style = MaterialTheme.typography.titleMedium)
                                 Text("الأولوية: " + priorityAr(c.priority), color = MaterialTheme.colorScheme.primary)
+                                Text("🕒 وصلت: " + fmtTime(c.createdMs), style = MaterialTheme.typography.bodySmall)
                                 Text(if (c.summary.isNotBlank()) c.summary else c.text, maxLines = 3)
                             }
                         }
@@ -220,6 +244,7 @@ fun Main(depts: List<String>, email: String) {
 @Composable
 fun Detail(c: Complaint, onClose: () -> Unit) {
     var reply by remember { mutableStateOf(c.reply) }
+    LaunchedEffect(c.id) { if (c.status == "routed" && c.seenMs == 0L) markSeen(c.id) }
     val bmp = remember(c.id) {
         if (c.imageB64.isEmpty()) null else try {
             val b = Base64.decode(c.imageB64, Base64.DEFAULT)
@@ -231,6 +256,7 @@ fun Detail(c: Complaint, onClose: () -> Unit) {
         title = { Text(c.title) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("🕒 وقت الاستلام: " + fmtTime(c.createdMs))
                 Text("الأولوية: " + priorityAr(c.priority))
                 if (c.summary.isNotBlank()) Text("ملخص: " + c.summary)
                 Text(c.text)

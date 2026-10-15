@@ -10,8 +10,19 @@
   <nav>
     <button data-t="new" class="on">بانتظار التحليل</button>
     <button data-t="routed">تم التوجيه</button>
+    <button data-t="in_progress">قيد المعالجة</button>
+    <button data-t="resolved">تم الحل</button>
     <button data-t="settings">الإعدادات</button>
   </nav>
+  <div id="bar">
+    <label>القسم <select id="fDept"></select></label>
+    <label>الفرز <select id="fSort">
+      <option value="newest">الأحدث استلاماً</option>
+      <option value="oldest">الأقدم استلاماً</option>
+      <option value="priority">الأولوية (الأهم أولاً)</option>
+      <option value="dept">تجميع حسب القسم</option>
+    </select></label>
+  </div>
   <div id="log"></div>
   <main id="view"></main>
   <script src="renderer.js"></script>

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -22,6 +22,15 @@ const store = new Store({
 let win, db, unsub = null;
 const busy = new Set();
 const failed = new Set();
+// حالة كل شكوى في اللقطة السابقة لاكتشاف ما فعله الموظف وإشعار المشغّل
+const prevState = new Map();
+let firstSnap = true;
+const tms = (t) => (t && t.toMillis ? t.toMillis() : 0);
+
+function notifyStaff(title, body) {
+  log(body);
+  try { if (Notification.isSupported()) new Notification({ title, body }).show(); } catch (e) { /* تجاهل */ }
+}
 
 function log(m) {
   if (win && !win.isDestroyed()) win.webContents.send('log', m);
@@ -32,6 +41,7 @@ async function connect() {
   if (!s.serviceAccountPath || !fs.existsSync(s.serviceAccountPath)) return log('اختر ملف مفتاح Firebase أولاً من الإعدادات');
   try {
     if (unsub) { unsub(); unsub = null; }
+    firstSnap = true; prevState.clear();
     if (!admin.apps.length) {
       admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync(s.serviceAccountPath, 'utf8'))) });
     }
@@ -44,10 +54,24 @@ async function connect() {
             id: d.id, title: x.title || '', text: x.text || '', imageB64: x.imageB64 || '',
             name: x.name || '', phone: x.phone || '', department: x.department || '',
             priority: x.priority || '', aiSummary: x.aiSummary || '', status: x.status || 'new',
-            reply: x.reply || '', createdMs: x.createdAt ? x.createdAt.toMillis() : 0,
+            reply: x.reply || '', createdMs: tms(x.createdAt),
+            routedMs: tms(x.routedAt), seenMs: tms(x.seenAt), startedMs: tms(x.startedAt), resolvedMs: tms(x.resolvedAt),
+            handledBy: x.handledBy || '',
           };
         }).sort((a, b) => b.createdMs - a.createdMs);
         win.webContents.send('complaints', list);
+        // ما فعله الموظف في تطبيقه يعود هنا فوراً: اطلاع، بدء معالجة، حل
+        list.forEach((c) => {
+          const p = prevState.get(c.id);
+          if (!firstSnap && p) {
+            const who = c.handledBy || 'الموظف';
+            if (p.status !== c.status && c.status === 'in_progress') notifyStaff('بدأت المعالجة', `${who} بدأ معالجة "${c.title}" (${c.department})`);
+            else if (p.status !== c.status && c.status === 'resolved') notifyStaff('تم حل شكوى', `${who} أنهى معالجة "${c.title}" (${c.department})`);
+            else if (!p.seenMs && c.seenMs) log(`${who} اطّلع على الشكوى "${c.title}" (${c.department})`);
+          }
+          prevState.set(c.id, { status: c.status, seenMs: c.seenMs });
+        });
+        firstSnap = false;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
       },
       (e) => log('خطأ في الاتصال: ' + e.message)
@@ -196,6 +220,6 @@ app.whenReady().then(() => {
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.webContents.once('did-finish-load', () => connect());
+  win.webContents.once('did-finish-load', () => { win.setTitle('مركز الشكاوى — الإصدار ' + app.getVersion()); connect(); });
 });
 app.on('window-all-closed', () => app.quit());
