@@ -4,8 +4,9 @@ service cloud.firestore {
     function isStaff() {
       return request.auth != null && exists(/databases/$(db)/documents/staff/$(request.auth.uid));
     }
-    function myDept() {
-      return get(/databases/$(db)/documents/staff/$(request.auth.uid)).data.department;
+    function myDepts() {
+      let s = get(/databases/$(db)/documents/staff/$(request.auth.uid)).data;
+      return ('departments' in s) ? s.departments : [s.department];
     }
     match /staff/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
@@ -17,8 +18,8 @@ service cloud.firestore {
         && request.resource.data.department == '';
       allow read: if request.auth != null
         && (resource.data.userId == request.auth.uid
-            || (isStaff() && resource.data.department == myDept()));
-      allow update: if isStaff() && resource.data.department == myDept()
+            || (isStaff() && resource.data.department in myDepts()));
+      allow update: if isStaff() && resource.data.department in myDepts()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt']);
     }
   }

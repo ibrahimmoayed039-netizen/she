@@ -123,15 +123,18 @@ fun Login() {
 
 @Composable
 fun Home(uid: String, email: String) {
-    var dept by remember { mutableStateOf<String?>(null) }
+    var depts by remember { mutableStateOf<List<String>?>(null) }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(uid) {
         try {
-            dept = FirebaseFirestore.getInstance().collection("staff").document(uid).get().await().getString("department")
+            val doc = FirebaseFirestore.getInstance().collection("staff").document(uid).get().await()
+            // يدعم عدة أقسام (الحقل departments مصفوفة) أو قسماً واحداً (الحقل department)
+            val arr = (doc.get("departments") as? List<*>)?.mapNotNull { it as? String }?.filter { it.isNotBlank() }
+            depts = if (!arr.isNullOrEmpty()) arr else doc.getString("department")?.takeIf { it.isNotBlank() }?.let { listOf(it) }
         } catch (e: Exception) { }
         loaded = true
     }
-    val d = dept
+    val d = depts
     when {
         !loaded -> Box(Modifier.fillMaxSize().padding(24.dp)) { Text("جارٍ التحميل...") }
         d == null -> Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -143,18 +146,25 @@ fun Home(uid: String, email: String) {
 }
 
 @Composable
-fun Main(dept: String, email: String) {
+fun Main(depts: List<String>, email: String) {
     var list by remember { mutableStateOf(listOf<Complaint>()) }
     var tab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<Complaint?>(null) }
 
-    DisposableEffect(dept) {
-        val reg = FirebaseFirestore.getInstance().collection("complaints")
-            .whereEqualTo("department", dept)
-            .addSnapshotListener { s, _ ->
-                if (s != null) list = s.documents.map { toComplaint(it) }.sortedByDescending { it.createdMs }
-            }
-        onDispose { reg.remove() }
+    DisposableEffect(depts) {
+        // مستمع لكل قسم ثم دمج النتائج
+        val parts = mutableMapOf<String, List<Complaint>>()
+        val regs = depts.map { d ->
+            FirebaseFirestore.getInstance().collection("complaints")
+                .whereEqualTo("department", d)
+                .addSnapshotListener { s, _ ->
+                    if (s != null) {
+                        parts[d] = s.documents.map { toComplaint(it) }
+                        list = parts.values.flatten().sortedByDescending { it.createdMs }
+                    }
+                }
+        }
+        onDispose { regs.forEach { it.remove() } }
     }
 
     val statuses = listOf("routed", "in_progress", "resolved")
@@ -195,7 +205,7 @@ fun Main(dept: String, email: String) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("حسابي", style = MaterialTheme.typography.headlineSmall)
                     Text("البريد: $email")
-                    Text("القسم: $dept")
+                    Text("الأقسام: " + depts.joinToString("، "))
                     Button(onClick = { FirebaseAuth.getInstance().signOut() }) { Text("تسجيل الخروج") }
                 }
             }
