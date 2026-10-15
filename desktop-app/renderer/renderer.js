@@ -87,6 +87,8 @@ function card(c) {
     rows.length ? h('div', { class: 'tl' }, rows.map((r) => h('div', {}, `${r[0]} ${r[1]}: ${fmt(r[2])}${r[3]}`))) : '',
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     h('p', {}, c.text),
+    (c.lat != null && c.lng != null) ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 فتح موقع الشكوى في الخرائط') : '',
+    c.resolvedImageB64 ? h('div', {}, h('div', { class: 'who' }, '📷 صورة بعد الحل'), h('img', { src: 'data:image/jpeg;base64,' + c.resolvedImageB64 })) : '',
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + c.name + ' ' + c.phone) : '',
     c.aiSummary ? h('p', { class: 'ai' }, '🤖 ' + c.aiSummary) : '',
     c.reply ? h('p', { class: 'reply' }, 'رد الموظف: ' + c.reply) : '',

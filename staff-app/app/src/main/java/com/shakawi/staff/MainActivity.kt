@@ -1,6 +1,19 @@
 package com.shakawi.staff
 
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
 import android.os.Bundle
 import android.util.Base64
 import androidx.activity.ComponentActivity
@@ -34,7 +47,7 @@ data class Complaint(
     val id: String, val title: String, val text: String, val department: String,
     val priority: String, val summary: String, val status: String, val reply: String,
     val createdMs: Long, val imageB64: String, val name: String, val phone: String,
-    val seenMs: Long
+    val seenMs: Long, val lat: Double?, val lng: Double?, val resolvedImageB64: String
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -44,7 +57,8 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("reply") ?: "",
     d.getTimestamp("createdAt")?.toDate()?.time ?: 0L,
     d.getString("imageB64") ?: "", d.getString("name") ?: "", d.getString("phone") ?: "",
-    d.getTimestamp("seenAt")?.toDate()?.time ?: 0L
+    d.getTimestamp("seenAt")?.toDate()?.time ?: 0L,
+    d.getDouble("lat"), d.getDouble("lng"), d.getString("resolvedImageB64") ?: ""
 )
 
 fun priorityAr(p: String): String = when (p) {
@@ -58,8 +72,48 @@ fun priorityAr(p: String): String = when (p) {
 fun fmtTime(ms: Long): String =
     if (ms <= 0L) "-" else SimpleDateFormat("yyyy/MM/dd  hh:mm a", Locale.getDefault()).format(Date(ms))
 
-// يكتب حالة الموظف في قاعدة البيانات فتظهر فوراً في برنامج الحاسوب
-fun setStatus(id: String, status: String, reply: String, onFail: (String) -> Unit = {}) {
+/** تصغير الصورة (مع تصحيح اتجاهها من EXIF) وتحويلها إلى Base64 لتُخزَّن داخل Firestore */
+fun compressImage(ctx: Context, uri: Uri): String {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    var sample = 1
+    while (bounds.outWidth / sample > 1800) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val bmp = ctx.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, opts) }!!
+    val rot = try {
+        ctx.contentResolver.openInputStream(uri)?.use {
+            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } ?: 0f
+    } catch (e: Exception) { 0f }
+    val scale = minOf(1f, 900f / maxOf(bmp.width, bmp.height))
+    val m = Matrix().apply { postScale(scale, scale); if (rot != 0f) postRotate(rot) }
+    val out0 = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+    val out = ByteArrayOutputStream()
+    out0.compress(Bitmap.CompressFormat.JPEG, 70, out)
+    return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+}
+
+/** يفتح موقع المواطن في تطبيق الخرائط (أو المتصفح إن لم يوجد تطبيق خرائط) */
+fun openMap(ctx: Context, lat: Double, lng: Double, label: String) {
+    val geo = Uri.parse("geo:$lat,$lng?q=$lat,$lng(${Uri.encode(label)})")
+    try {
+        ctx.startActivity(Intent(Intent.ACTION_VIEW, geo).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+        try {
+            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/search/?api=1&query=$lat,$lng")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e2: Exception) {
+            android.widget.Toast.makeText(ctx, "لا يوجد تطبيق لفتح الخرائط", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+}
+
+// يكتب حالة الموظف في قاعدة البيانات فتظهر فوراً في برنامج الحاسوب وعند المواطن
+fun setStatus(id: String, status: String, reply: String, resolvedImageB64: String = "", onFail: (String) -> Unit = {}) {
     val ref = FirebaseFirestore.getInstance().collection("complaints").document(id)
     val data = mutableMapOf<String, Any>(
         "status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp(),
@@ -67,9 +121,13 @@ fun setStatus(id: String, status: String, reply: String, onFail: (String) -> Uni
     )
     if (status == "in_progress") data["startedAt"] = FieldValue.serverTimestamp()
     if (status == "resolved") data["resolvedAt"] = FieldValue.serverTimestamp()
+    if (status == "resolved" && resolvedImageB64.isNotEmpty()) data["resolvedImageB64"] = resolvedImageB64
     ref.update(data).addOnFailureListener {
         // غالباً قواعد Firestore القديمة لا تسمح بالحقول الجديدة: نعيد المحاولة بالحقول الأساسية فقط
         ref.update(mapOf("status" to status, "reply" to reply, "updatedAt" to FieldValue.serverTimestamp()))
+            .addOnSuccessListener {
+                if (resolvedImageB64.isNotEmpty()) onFail("حُفظت الحالة لكن لم تُرسل الصورة. انشر قواعد firestore.rules الجديدة")
+            }
             .addOnFailureListener { e -> onFail(e.message ?: "") }
     }
 }
@@ -250,6 +308,30 @@ fun Main(depts: List<String>, email: String) {
 fun Detail(c: Complaint, onClose: () -> Unit) {
     var reply by remember { mutableStateOf(c.reply) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var afterB64 by remember { mutableStateOf("") }
+    var shotUri by remember { mutableStateOf<Uri?>(null) }
+
+    fun loadPhoto(uri: Uri) {
+        scope.launch {
+            try { afterB64 = withContext(Dispatchers.IO) { compressImage(ctx, uri) } }
+            catch (e: Exception) { android.widget.Toast.makeText(ctx, "تعذّر قراءة الصورة", android.widget.Toast.LENGTH_LONG).show() }
+        }
+    }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { u -> if (u != null) loadPhoto(u) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) shotUri?.let { loadPhoto(it) } }
+    val afterBmp = remember(afterB64) {
+        if (afterB64.isEmpty()) null else try {
+            val b = Base64.decode(afterB64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap()
+        } catch (e: Exception) { null }
+    }
+    val doneBmp = remember(c.id, c.resolvedImageB64.length) {
+        if (c.resolvedImageB64.isEmpty()) null else try {
+            val b = Base64.decode(c.resolvedImageB64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap()
+        } catch (e: Exception) { null }
+    }
     val onFail: (String) -> Unit = { m ->
         android.widget.Toast.makeText(ctx, "تعذّر حفظ الحالة، تحقق من الاتصال والصلاحيات: $m", android.widget.Toast.LENGTH_LONG).show()
     }
@@ -271,13 +353,43 @@ fun Detail(c: Complaint, onClose: () -> Unit) {
                 Text(c.text)
                 if (bmp != null) Image(bitmap = bmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
                 if (c.name.isNotBlank() || c.phone.isNotBlank()) Text("المواطن: ${c.name} ${c.phone}")
+                if (c.lat != null && c.lng != null) {
+                    Text("📍 موقع الشكوى: %.5f ، %.5f".format(c.lat, c.lng))
+                    OutlinedButton(onClick = { openMap(ctx, c.lat, c.lng, c.title) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("🗺️ فتح الموقع في الخرائط")
+                    }
+                } else Text("لم يرسل المواطن موقعاً", style = MaterialTheme.typography.bodySmall)
+                if (c.status == "resolved") {
+                    if (doneBmp != null) {
+                        Text("📷 صورة بعد الحل:")
+                        Image(bitmap = doneBmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                    }
+                } else {
+                    Text("📷 صورة بعد الحل (تصل للمواطن):")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            val dir = File(ctx.cacheDir, "shots").apply { mkdirs() }
+                            val f = File(dir, "after_${System.currentTimeMillis()}.jpg")
+                            val u = FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", f)
+                            shotUri = u
+                            try { camera.launch(u) } catch (e: Exception) {
+                                android.widget.Toast.makeText(ctx, "تعذّر فتح الكاميرا", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        }) { Text("التقاط") }
+                        OutlinedButton(onClick = { gallery.launch("image/*") }) { Text("من المعرض") }
+                    }
+                    if (afterBmp != null) {
+                        Image(bitmap = afterBmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                        TextButton(onClick = { afterB64 = "" }) { Text("إزالة الصورة") }
+                    }
+                }
                 OutlinedTextField(reply, { reply = it }, label = { Text("الرد على المواطن") }, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (c.status == "routed") Button(onClick = { setStatus(c.id, "in_progress", reply, onFail); onClose() }) { Text("بدء المعالجة") }
-                if (c.status != "resolved") Button(onClick = { setStatus(c.id, "resolved", reply, onFail); onClose() }) { Text("تم الحل") }
+                if (c.status == "routed") Button(onClick = { setStatus(c.id, "in_progress", reply, "", onFail); onClose() }) { Text("بدء المعالجة") }
+                if (c.status != "resolved") Button(onClick = { setStatus(c.id, "resolved", reply, afterB64, onFail); onClose() }) { Text("تم الحل") }
             }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("إغلاق") } }

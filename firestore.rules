@@ -20,7 +20,7 @@ service cloud.firestore {
         && (resource.data.userId == request.auth.uid
             || (isStaff() && resource.data.department in myDepts()));
       allow update: if isStaff() && resource.data.department in myDepts()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'seenAt', 'startedAt', 'resolvedAt', 'handledBy']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'seenAt', 'startedAt', 'resolvedAt', 'handledBy', 'resolvedImageB64']);
     }
   }
 }

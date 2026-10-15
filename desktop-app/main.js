@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, shell, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -57,6 +57,8 @@ async function connect() {
             reply: x.reply || '', createdMs: tms(x.createdAt),
             routedMs: tms(x.routedAt), seenMs: tms(x.seenAt), startedMs: tms(x.startedAt), resolvedMs: tms(x.resolvedAt),
             handledBy: x.handledBy || '',
+            lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
+            resolvedImageB64: x.resolvedImageB64 || '',
           };
         }).sort((a, b) => b.createdMs - a.createdMs);
         win.webContents.send('complaints', list);
@@ -77,6 +79,7 @@ async function connect() {
       (e) => log('خطأ في الاتصال: ' + e.message)
     );
     log('تم الاتصال بقاعدة البيانات');
+    warmOllama();
   } catch (e) {
     log('فشل الاتصال: ' + e.message);
   }
@@ -107,23 +110,64 @@ async function callClaude(d, prompt) {
   return (out.content || []).map((b) => b.text || '').join('');
 }
 
+// النماذج المحلية بطيئة مع الصور الكبيرة: نصغّر الصورة (الأطول ضلعاً 512 بكسل) قبل إرسالها
+const LOCAL_IMG = 512;
+function shrinkForLocal(b64) {
+  try {
+    const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'));
+    const { width, height } = img.getSize();
+    if (!width || Math.max(width, height) <= LOCAL_IMG) return b64;
+    const r = width >= height ? img.resize({ width: LOCAL_IMG }) : img.resize({ height: LOCAL_IMG });
+    return r.toJPEG(70).toString('base64');
+  } catch (e) { return b64; }
+}
+
+const OLLAMA_TIMEOUT_MS = 240000; // المهلة القصوى لطلب واحد (تشمل تحميل النموذج أول مرة)
+const OLLAMA_KEEP_ALIVE = '30m';  // يبقي النموذج في الذاكرة بين الطلبات بدل إعادة تحميله
+
 async function callOllama(d, prompt, withImage) {
   const model = store.get('ollamaModel');
   if (!model) throw new Error('اسم نموذج Ollama غير مضبوط');
   const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
   const msg = { role: 'user', content: prompt };
-  if (withImage && d.imageB64) msg.images = [d.imageB64];
-  const res = await fetch(base + '/api/chat', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model, stream: false, format: 'json', options: { temperature: 0 },
-      messages: [{ role: 'system', content: SYSTEM }, msg],
-    }),
-  });
+  if (withImage && d.imageB64) msg.images = [shrinkForLocal(d.imageB64)];
+  let res;
+  try {
+    res = await fetch(base + '/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+      body: JSON.stringify({
+        model, stream: false, format: 'json', keep_alive: OLLAMA_KEEP_ALIVE,
+        options: { temperature: 0, num_predict: 300 },
+        messages: [{ role: 'system', content: SYSTEM }, msg],
+      }),
+    });
+  } catch (e) {
+    if (e.name === 'TimeoutError') throw new Error('انتهت مهلة Ollama (' + OLLAMA_TIMEOUT_MS / 1000 + ' ثانية). النموذج ثقيل على هذا الجهاز');
+    throw e;
+  }
   if (!res.ok) throw new Error(`Ollama ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const out = await res.json();
   return (out.message && out.message.content) || '';
+}
+
+// تحميل النموذج في الذاكرة مسبقاً عند الاتصال، فلا ينتظر أول شكوى
+async function warmOllama() {
+  const p = store.get('provider');
+  const model = store.get('ollamaModel');
+  if ((p !== 'local' && p !== 'hybrid') || !model) return;
+  const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
+  try {
+    log('جارٍ تحميل نموذج Ollama في الذاكرة...');
+    const t0 = Date.now();
+    const res = await fetch(base + '/api/generate', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+      body: JSON.stringify({ model, keep_alive: OLLAMA_KEEP_ALIVE }),
+    });
+    log(res.ok ? `النموذج جاهز (${Math.round((Date.now() - t0) / 1000)} ثانية)` : 'تعذّر تحميل النموذج مسبقاً: ' + res.status);
+  } catch (e) { log('تعذّر تحميل النموذج مسبقاً: ' + e.message); }
 }
 
 function parseResult(txt, depts) {
@@ -139,9 +183,17 @@ function parseResult(txt, depts) {
   };
 }
 
-async function analyze(id, force = false) {
+// الشكاوى تُحلَّل واحدة بعد أخرى: الإرسال المتوازي يجعل Ollama يضع الطلبات في صف ويبدو كل تحليل أبطأ
+let queue = Promise.resolve();
+function analyze(id, force = false) {
   if (busy.has(id) || (failed.has(id) && !force)) return;
-  busy.add(id);
+  busy.add(id); // يبقى «مشغولاً» من دخول الطابور حتى الانتهاء
+  const job = queue.then(() => analyzeNow(id, force));
+  queue = job.catch(() => {});
+  return job;
+}
+
+async function analyzeNow(id, force) {
   try {
     const ref = db.collection('complaints').doc(id);
     const d = (await ref.get()).data();
@@ -210,6 +262,9 @@ ipcMain.handle('ollama:test', async () => {
   } catch (e) {
     log('تعذّر الاتصال بـ Ollama: ' + e.message + ' — تأكد أنه مثبت ويعمل');
   }
+});
+ipcMain.handle('map:open', (_, lat, lng) => {
+  if (typeof lat === 'number' && typeof lng === 'number') shell.openExternal(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
 });
 ipcMain.handle('analyze', (_, id) => analyze(id, true));
 
