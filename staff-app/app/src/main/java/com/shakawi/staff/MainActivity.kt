@@ -256,6 +256,9 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("حسابي", style = MaterialTheme.typography.headlineSmall)
                     Text("البريد: $email")
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val ver = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" } }
+                    Text("الإصدار: $ver")
                     Text("الأقسام: " + depts.joinToString("، "))
                     if (branches.isNotEmpty()) Text("الفروع: " + branches.joinToString("، "))
                     if (crews.isNotEmpty()) Text("الكوادر: " + crews.joinToString("، "))

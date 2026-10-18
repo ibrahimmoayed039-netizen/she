@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+// رقم الإصدار يُمرَّر من GitHub Actions ويزداد تلقائياً مع كل بناء (-PverCode=رقم)
+val verCode = (project.findProperty("verCode") as String?)?.toIntOrNull() ?: 1
 android {
     namespace = "com.shakawi.staff"
     compileSdk = 34
@@ -9,8 +11,20 @@ android {
         applicationId = "com.shakawi.staff"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = verCode
+        versionName = "1.0.$verCode"
+    }
+    // توقيع ثابت لكل البنايات حتى يُحدَّث التطبيق فوق القديم بدون حذف
+    signingConfigs {
+        create("shakawi") {
+            storeFile = file("../../keystore/shakawi.jks")
+            storePassword = "shakawi123"
+            keyAlias = "shakawi"
+            keyPassword = "shakawi123"
+        }
+    }
+    buildTypes {
+        getByName("debug") { signingConfig = signingConfigs.getByName("shakawi") }
     }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
