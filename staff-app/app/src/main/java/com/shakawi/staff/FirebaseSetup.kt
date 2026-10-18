@@ -33,7 +33,8 @@ object FbConfig {
         return try {
             FirebaseApp.initializeApp(
                 ctx,
-                FirebaseOptions.Builder().setApiKey(key).setApplicationId(app).setProjectId(project).build()
+                FirebaseOptions.Builder().setApiKey(key).setApplicationId(app).setProjectId(project)
+                    .setGcmSenderId(app.split(":").getOrNull(1) ?: "").build()
             )
             true
         } catch (e: Exception) {

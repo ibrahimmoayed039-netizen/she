@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -45,12 +45,89 @@ function toCrews(x) {
   return [...new Set(out.map((v) => String(v).trim()).filter(Boolean))];
 }
 
+// ---------- الإشعارات (FCM) ----------
+// اسم موضوع القسم: ترميز سداسي لأن العربية غير مسموحة في أسماء المواضيع (نفس دالة تطبيق الموظف)
+const deptTopic = (d) => 'd' + Buffer.from(String(d), 'utf8').toString('hex');
+
+async function notifyTopic(dept, title, body) {
+  try {
+    await admin.messaging().send({ topic: deptTopic(dept), notification: { title, body }, android: { priority: 'high' } });
+  } catch (e) { log('تعذّر إرسال إشعار للقسم: ' + e.message); }
+}
+async function notifyToken(token, title, body) {
+  if (!token) return;
+  try {
+    await admin.messaging().send({ token, notification: { title, body }, android: { priority: 'high' } });
+  } catch (e) { log('تعذّر إرسال إشعار للمواطن: ' + e.message); }
+}
+
+// ---------- سجل الشكوى ----------
+async function addLog(id, by, action) {
+  try {
+    await db.collection('complaints').doc(id).collection('log').add({ by, action, at: admin.firestore.FieldValue.serverTimestamp() });
+  } catch (e) { log('تعذّر كتابة السجل: ' + e.message); }
+}
+
+// ---------- كشف الشكاوى المكررة ----------
+function distM(a, b, c, d) {
+  const R = 6371000, rad = (x) => (x * Math.PI) / 180;
+  const dLat = rad(c - a), dLng = rad(d - b);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a)) * Math.cos(rad(c)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function words(t) {
+  return new Set(String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((w) => w.length > 2));
+}
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let i = 0; a.forEach((w) => { if (b.has(w)) i++; });
+  return i / (a.size + b.size - i);
+}
+// تكرار = نفس القسم، لم تُحل، خلال 14 يوماً، وموقعها خلال 150م أو نصها متشابه جداً
+async function checkDuplicate(id, d, dept) {
+  try {
+    const snap = await db.collection('complaints').where('department', '==', dept).get();
+    const mine = d.createdAt ? d.createdAt.toMillis() : Date.now();
+    const myWords = words(d.title + ' ' + d.text);
+    let best = null, bestScore = 0;
+    snap.docs.forEach((o) => {
+      if (o.id === id) return;
+      const x = o.data();
+      if (x.status === 'resolved' || x.duplicateOf) return;
+      const t = x.createdAt ? x.createdAt.toMillis() : 0;
+      if (!t || t >= mine || mine - t > 14 * 86400000) return;
+      let score = 0;
+      if (typeof d.lat === 'number' && typeof x.lat === 'number') {
+        const m = distM(d.lat, d.lng, x.lat, x.lng);
+        if (m <= 150) score = 1 - m / 1000 + jaccard(myWords, words(x.title + ' ' + x.text));
+      }
+      if (!score) { const j = jaccard(myWords, words(x.title + ' ' + x.text)); if (j >= 0.6) score = j; }
+      if (score > bestScore) { bestScore = score; best = { id: o.id, title: x.title || '' }; }
+    });
+    if (!best) return;
+    await db.collection('complaints').doc(id).update({ duplicateOf: best.id, dupTitle: best.title });
+    await db.collection('complaints').doc(best.id).update({ dupCount: admin.firestore.FieldValue.increment(1) });
+    await addLog(id, 'النظام', 'اكتُشف أنها مكررة لشكوى سابقة: ' + best.title);
+    log(`شكوى مكررة: "${d.title}" تشبه "${best.title}"`);
+  } catch (e) { log('تعذّر فحص التكرار: ' + e.message); }
+}
+
+// آخر حالة معروفة لكل شكوى لاكتشاف التغيّر وإشعار المواطن
+const lastState = new Map();
+let seeded = false;
+const PUSH_TEXT = {
+  routed: (x) => ['تم استلام شكواك', 'وُجِّهت شكواك إلى ' + x.department],
+  in_progress: () => ['شكواك قيد المعالجة', 'بدأ العمل على شكواك'],
+  resolved: (x) => ['تم حل شكواك', x.reply ? x.reply : 'تم إنجاز شكواك، يمكنك تقييم الخدمة من التطبيق'],
+};
+
 async function connect() {
   const s = store.store;
   if (!s.serviceAccountPath || !fs.existsSync(s.serviceAccountPath)) return log('اختر ملف مفتاح Firebase أولاً من الإعدادات');
   try {
     if (unsub) { unsub(); unsub = null; }
     if (unsubStaff) { unsubStaff(); unsubStaff = null; }
+    seeded = false; lastState.clear();
     if (!admin.apps.length) {
       admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync(s.serviceAccountPath, 'utf8'))) });
     }
@@ -67,9 +144,25 @@ async function connect() {
             branch: x.branch || '', repairable: typeof x.repairable === 'boolean' ? x.repairable : null,
             materials: x.materials || '', assessedMs: x.assessedAt ? x.assessedAt.toMillis() : 0,
             crew: x.crew || '', crewMs: x.crewAt ? x.crewAt.toMillis() : 0,
+            routedMs: x.routedAt ? x.routedAt.toMillis() : 0, startedMs: x.startedAt ? x.startedAt.toMillis() : 0,
+            resolvedMs: x.resolvedAt ? x.resolvedAt.toMillis() : (x.status === 'resolved' && x.updatedAt ? x.updatedAt.toMillis() : 0),
+            lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
+            afterImageB64: x.afterImageB64 || '', rating: typeof x.rating === 'number' ? x.rating : 0,
+            dupTitle: x.dupTitle || '', dupCount: x.dupCount || 0,
           };
         }).sort((a, b) => b.createdMs - a.createdMs);
         win.webContents.send('complaints', list);
+        // إشعار المواطن عند تغيّر الحالة أو إسناد كادر (لا يُرسل في أول تحميل)
+        snap.docs.forEach((doc) => {
+          const x = doc.data(), prev = lastState.get(doc.id);
+          if (seeded && prev && x.status === 'resolved' && prev.status !== 'resolved') log(`✅ أُنجز العمل: "${x.title || ''}"` + (x.crew ? ' (الكادر: ' + x.crew + ')' : ''));
+          if (seeded && prev && x.fcmToken) {
+            if (x.status !== prev.status && PUSH_TEXT[x.status]) { const [t, b] = PUSH_TEXT[x.status](x); notifyToken(x.fcmToken, t, b); }
+            else if (x.crew && x.crew !== prev.crew) notifyToken(x.fcmToken, 'تم إسناد شكواك', 'أُسندت شكواك إلى كادر الصيانة: ' + x.crew);
+          }
+          lastState.set(doc.id, { status: x.status, crew: x.crew || '' });
+        });
+        seeded = true;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
       },
       (e) => log('خطأ في الاتصال: ' + e.message)
@@ -189,6 +282,9 @@ async function analyze(id, force = false) {
       routedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     failed.delete(id);
+    addLog(id, 'النظام', `تم التوجيه إلى ${r.department} بأولوية ${r.priority} (${used})`);
+    notifyTopic(r.department, 'شكوى جديدة: ' + (d.title || ''), r.summary || d.text || '');
+    checkDuplicate(id, d, r.department);
     log(`تم توجيه "${d.title}" إلى ${r.department} (${used})`);
   } catch (e) {
     failed.add(id);
@@ -236,7 +332,12 @@ ipcMain.handle('complaint:add', async (_, d) => {
       aiSummary: '', reply: '', createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (routed) doc.routedAt = admin.firestore.FieldValue.serverTimestamp();
-    await db.collection('complaints').add(doc);
+    const added = await db.collection('complaints').add(doc);
+    if (routed) {
+      addLog(added.id, 'المدير', 'إدخال يدوي وتوجيه إلى ' + doc.department);
+      notifyTopic(doc.department, 'شكوى جديدة: ' + title, text);
+      checkDuplicate(added.id, { ...doc, createdAt: admin.firestore.Timestamp.now() }, doc.department);
+    }
     log('تمت إضافة الشكوى يدوياً' + (routed ? ' إلى ' + doc.department : ' وستُحلَّل وتُوجَّه'));
     return { ok: true };
   } catch (e) {
@@ -244,6 +345,32 @@ ipcMain.handle('complaint:add', async (_, d) => {
   }
 });
 ipcMain.handle('connect', () => connect());
+const PRI_AR = { urgent: 'عاجلة', high: 'عالية', medium: 'متوسطة', low: 'منخفضة' };
+// تغيير أولوية شكوى بعينها يدوياً (حادث طارئ مثلاً)
+ipcMain.handle('priority:set', async (_, id, p) => {
+  try {
+    if (!db || !PRI_AR[p]) return false;
+    const ref = db.collection('complaints').doc(String(id));
+    const d = (await ref.get()).data();
+    if (!d || d.priority === p) return true;
+    await ref.update({ priority: p, priorityManual: true, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    addLog(id, 'المدير', `غيّر الأولوية من ${PRI_AR[d.priority] || '-'} إلى ${PRI_AR[p]}`);
+    if (d.department && (p === 'urgent' || p === 'high') && d.status !== 'resolved') {
+      notifyTopic(d.department, (p === 'urgent' ? '🚨 شكوى عاجلة: ' : '⚠️ أولوية عالية: ') + (d.title || ''), d.aiSummary || d.text || '');
+    }
+    log(`تم تغيير أولوية "${d.title}" إلى ${PRI_AR[p]}`);
+    return true;
+  } catch (e) { log('تعذّر تغيير الأولوية: ' + e.message); return false; }
+});
+ipcMain.handle('log:get', async (_, id) => {
+  try {
+    const s = await db.collection('complaints').doc(String(id)).collection('log').orderBy('at', 'desc').get();
+    return s.docs.map((d) => { const x = d.data(); return { by: x.by || '', action: x.action || '', ms: x.at ? x.at.toMillis() : 0 }; });
+  } catch (e) { return []; }
+});
+ipcMain.handle('map:open', (_, lat, lng) => {
+  if (typeof lat === 'number' && typeof lng === 'number') shell.openExternal(`https://www.google.com/maps?q=${lat},${lng}`);
+});
 ipcMain.handle('ollama:test', async () => {
   const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
   try {

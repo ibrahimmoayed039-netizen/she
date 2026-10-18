@@ -1,6 +1,20 @@
 package com.shakawi.citizen
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Build
+import android.os.Looper
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.content.ContextCompat
+import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -34,14 +48,16 @@ import java.io.ByteArrayOutputStream
 
 data class Complaint(
     val id: String, val title: String, val text: String, val department: String,
-    val status: String, val reply: String, val createdMs: Long
+    val status: String, val reply: String, val createdMs: Long,
+    val afterB64: String, val rating: Long
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.id, d.getString("title") ?: "", d.getString("text") ?: "",
     d.getString("department") ?: "", d.getString("status") ?: "new",
     d.getString("reply") ?: "",
-    d.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis()
+    d.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis(),
+    d.getString("afterImageB64") ?: "", d.getLong("rating") ?: 0L
 )
 
 fun statusAr(s: String) = when (s) {
@@ -67,6 +83,47 @@ fun compressImage(ctx: Context, uri: Uri): String {
     return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
 }
 
+/** يحدد الموقع الحالي: آخر موقع معروف إن كان حديثاً، وإلا طلب موقع جديد (حتى 12 ثانية) */
+@SuppressLint("MissingPermission")
+suspend fun getMyLocation(ctx: Context): Pair<Double, Double>? {
+    val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    val provs = try { lm.getProviders(true) } catch (e: Exception) { emptyList() }
+    var best: Location? = null
+    for (p in provs) {
+        val l = try { lm.getLastKnownLocation(p) } catch (e: Exception) { null }
+        if (l != null && (best == null || l.time > best.time)) best = l
+    }
+    if (best != null && System.currentTimeMillis() - best.time < 5 * 60_000) return best.latitude to best.longitude
+    val prov = when {
+        provs.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+        provs.contains(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+        else -> null
+    }
+    if (prov != null) {
+        val fresh = withTimeoutOrNull(12000) {
+            suspendCancellableCoroutine<Location?> { c ->
+                val l = object : LocationListener {
+                    override fun onLocationChanged(loc: Location) { if (c.isActive) c.resume(loc) }
+                    override fun onProviderEnabled(p: String) {}
+                    override fun onProviderDisabled(p: String) {}
+                    @Deprecated("old API")
+                    override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
+                }
+                try { lm.requestSingleUpdate(prov, l, Looper.getMainLooper()) } catch (e: Exception) { if (c.isActive) c.resume(null) }
+                c.invokeOnCancellation { try { lm.removeUpdates(l) } catch (e: Exception) { } }
+            }
+        }
+        if (fresh != null) return fresh.latitude to fresh.longitude
+    }
+    return best?.let { it.latitude to it.longitude }
+}
+
+fun rateComplaint(id: String, n: Int) {
+    FirebaseFirestore.getInstance().collection("complaints").document(id).update(
+        mapOf("rating" to n, "ratedAt" to FieldValue.serverTimestamp())
+    )
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +132,10 @@ class MainActivity : ComponentActivity() {
                 MaterialTheme {
                     var ready by remember { mutableStateOf(FbConfig.init(applicationContext)) }
                     if (ready) {
+                        val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+                        LaunchedEffect(Unit) {
+                            if (Build.VERSION.SDK_INT >= 33) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
                         LaunchedEffect(Unit) {
                             val a = FirebaseAuth.getInstance()
                             if (a.currentUser == null) a.signInAnonymously()
@@ -128,7 +189,20 @@ fun NewTab(onSent: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var img by remember { mutableStateOf<Uri?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var loc by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var locBusy by remember { mutableStateOf(false) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { img = it }
+    fun fetchLoc() {
+        scope.launch {
+            locBusy = true
+            loc = try { getMyLocation(ctx) } catch (e: Exception) { null }
+            locBusy = false
+            if (loc == null) Toast.makeText(ctx, "تعذر تحديد الموقع، فعّل GPS وحاول مجدداً", Toast.LENGTH_LONG).show()
+        }
+    }
+    val locPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) fetchLoc() else Toast.makeText(ctx, "لم يُسمح بالوصول إلى الموقع", Toast.LENGTH_SHORT).show()
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -143,6 +217,13 @@ fun NewTab(onSent: () -> Unit) {
         OutlinedButton(onClick = { pick.launch("image/*") }) {
             Text(if (img == null) "إرفاق صورة" else "تم اختيار صورة ✓ (تغيير)")
         }
+        OutlinedButton(
+            enabled = !locBusy,
+            onClick = {
+                if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) fetchLoc()
+                else locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        ) { Text(if (locBusy) "جارٍ تحديد الموقع..." else if (loc == null) "📍 إرفاق موقعي الحالي" else "📍 تم تحديد الموقع ✓ (تحديث)") }
         Button(
             enabled = !busy && title.isNotBlank() && text.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
@@ -165,6 +246,12 @@ fun NewTab(onSent: () -> Unit) {
                             "status" to "new", "reply" to "",
                             "createdAt" to FieldValue.serverTimestamp()
                         )
+                        loc?.let { data["lat"] = it.first; data["lng"] = it.second }
+                        // رمز الإشعارات ليصل المواطن تنبيه عند تغيّر حالة شكواه
+                        try {
+                            withTimeoutOrNull(4000) { FirebaseMessaging.getInstance().token.await() }
+                                ?.let { data["fcmToken"] = it }
+                        } catch (e: Exception) { }
                         val sent = withTimeoutOrNull(10000) {
                             FirebaseFirestore.getInstance().collection("complaints").add(data).await()
                         }
@@ -173,7 +260,7 @@ fun NewTab(onSent: () -> Unit) {
                             if (sent != null) "تم إرسال الشكوى" else "سيتم الإرسال عند توفر الإنترنت",
                             Toast.LENGTH_LONG
                         ).show()
-                        title = ""; text = ""; img = null
+                        title = ""; text = ""; img = null; loc = null
                         onSent()
                     } catch (e: Exception) {
                         Toast.makeText(ctx, e.message ?: "حدث خطأ", Toast.LENGTH_LONG).show()
@@ -210,6 +297,29 @@ fun MyTab(uid: String?) {
                     if (c.department.isNotBlank()) Text("القسم: " + c.department)
                     Text(c.text)
                     if (c.reply.isNotBlank()) Text("رد الجهة المختصة: " + c.reply, style = MaterialTheme.typography.bodyMedium)
+                    if (c.afterB64.isNotEmpty()) {
+                        val ab = remember(c.id, c.afterB64.length) {
+                            try {
+                                val b = Base64.decode(c.afterB64, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap()
+                            } catch (e: Exception) { null }
+                        }
+                        if (ab != null) {
+                            Text("صورة بعد الصيانة:")
+                            Image(bitmap = ab, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                    if (c.status == "resolved") {
+                        if (c.rating > 0) Text("تقييمك: " + "⭐".repeat(c.rating.toInt()))
+                        else {
+                            Text("قيّم الخدمة:")
+                            Row {
+                                (1..5).forEach { n ->
+                                    TextButton(onClick = { rateComplaint(c.id, n) }) { Text("$n⭐") }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

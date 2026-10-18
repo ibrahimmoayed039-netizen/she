@@ -28,3 +28,5 @@ th,td{border:1px solid #ddd;padding:6px;text-align:center}
 th{background:#f3f4f6}
 td.warn{color:#9a3412;font-weight:bold}
 .small{color:#555;font-size:13px}
+
+.card.urgent { border: 2px solid #d32f2f; background: #fff5f5; }

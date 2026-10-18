@@ -19,8 +19,25 @@ service cloud.firestore {
       allow read: if request.auth != null
         && (resource.data.userId == request.auth.uid
             || (isStaff() && resource.data.department in myDepts()));
+      // الموظف: الحالة والرد والتقرير والكادر وصورة ما بعد الصيانة
       allow update: if isStaff() && resource.data.department in myDepts()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt']);
+      // المواطن: تقييم شكواه مرة واحدة بعد «تم الحل»
+      allow update: if request.auth != null
+        && resource.data.userId == request.auth.uid
+        && resource.data.status == 'resolved'
+        && !('rating' in resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'ratedAt'])
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1 && request.resource.data.rating <= 5;
+
+      // سجل الشكوى
+      match /log/{lid} {
+        allow read: if isStaff() && get(/databases/$(db)/documents/complaints/$(id)).data.department in myDepts();
+        allow create: if isStaff()
+          && get(/databases/$(db)/documents/complaints/$(id)).data.department in myDepts()
+          && request.resource.data.keys().hasOnly(['by', 'action', 'at']);
+      }
     }
   }
 }

@@ -13,22 +13,85 @@ function h(tag, props = {}, ...kids) {
   return e;
 }
 
+const fmtT = (ms) => new Date(ms).toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
+function fmtD(ms) {
+  if (ms < 0) return '-';
+  const m = Math.round(ms / 60000);
+  if (m < 60) return m + ' دقيقة';
+  const h2 = Math.floor(m / 60);
+  if (h2 < 48) return h2 + ' ساعة' + (m % 60 ? ' و' + (m % 60) + ' دقيقة' : '');
+  return Math.floor(h2 / 24) + ' يوم' + (h2 % 24 ? ' و' + (h2 % 24) + ' ساعة' : '');
+}
+// بداية العمل الفعلي: استلام الكادر، وإلا بدء المعالجة، وإلا التوجيه
+const workStart = (c) => c.crewMs || c.startedMs || c.routedMs || c.createdMs;
+
+function timeline(c) {
+  const rows = [
+    ['📥 وصول الشكوى', c.createdMs],
+    ['➡️ التوجيه إلى القسم', c.routedMs],
+    ['🚧 استلام الكادر' + (c.crew ? ' (' + c.crew + ')' : ''), c.crewMs],
+    ['🔧 بدء المعالجة', c.startedMs],
+    ['✅ وقت الإنجاز', c.resolvedMs],
+  ].filter((r) => r[1]);
+  if (!rows.length) return '';
+  const extra = [];
+  if (c.resolvedMs) {
+    extra.push('⏱ مدة الإنجاز من الاستلام: ' + fmtD(c.resolvedMs - workStart(c)));
+    extra.push('⏱ المدة الكلية منذ وصول الشكوى: ' + fmtD(c.resolvedMs - c.createdMs));
+  } else if (c.status !== 'new' && c.createdMs) {
+    extra.push('⏳ مضى على الشكوى: ' + fmtD(Date.now() - c.createdMs) + ' ولم تُنجز بعد');
+  }
+  return h('div', { class: 'small' },
+    ...rows.map((r) => h('div', {}, r[0] + ': ' + fmtT(r[1]))),
+    ...extra.map((t) => h('div', { class: c.resolvedMs ? '' : 'warn' }, t)));
+}
+
+function logButton(id) {
+  const box = h('div', { class: 'small' });
+  const btn = h('button', { class: 'act', onclick: async () => {
+    if (box.childNodes.length) { box.replaceChildren(); return; }
+    const items = await window.api.getLog(id);
+    if (!items.length) { box.append('لا يوجد سجل بعد'); return; }
+    items.forEach((i) => box.append(h('div', {}, new Date(i.ms).toLocaleString('ar-IQ') + ' — ' + i.by + ': ' + i.action)));
+  } }, '🕘 سجل الشكوى');
+  return h('div', {}, btn, box);
+}
+
+const PRI_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
+
+function priorityPicker(c) {
+  if (c.status === 'new' || c.status === 'resolved') return '';
+  const sel = h('select', { onchange: (e) => window.api.setPriority(c.id, e.target.value) },
+    ...Object.entries(PRI).map(([k, v]) => h('option', { value: k }, v)));
+  sel.value = c.priority || 'medium';
+  return h('div', { class: 'small' }, 'تغيير الأولوية: ', sel);
+}
+
 function card(c) {
+  const urgent = c.priority === 'urgent' && c.status !== 'resolved';
   const meta = [STATUS[c.status] || c.status, c.department, c.priority ? 'أولوية ' + PRI[c.priority] : ''].filter(Boolean).join(' • ');
-  return h('div', { class: 'card' },
-    h('h3', {}, c.title),
+  return h('div', { class: urgent ? 'card urgent' : 'card' },
+    h('h3', {}, (urgent ? '🚨 ' : '') + c.title),
     h('small', {}, meta),
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     h('p', {}, c.text),
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + c.name + ' ' + c.phone) : '',
+    c.dupTitle ? h('p', { class: 'rep no' }, '🔁 مكررة: تشبه شكوى سابقة («' + c.dupTitle + '»)') : '',
+    c.dupCount ? h('p', { class: 'small' }, '🔁 تكررت هذه الشكوى ' + c.dupCount + ' مرة') : '',
+    c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 فتح الموقع على الخريطة') : '',
     c.crew ? h('p', { class: 'rep yes' }, '🚧 الكادر المسؤول: ' + c.crew) : '',
+    c.afterImageB64 ? h('div', {}, h('b', {}, 'صورة بعد الصيانة:'), h('img', { src: 'data:image/jpeg;base64,' + c.afterImageB64 })) : '',
+    c.rating ? h('p', {}, 'تقييم المواطن: ' + '⭐'.repeat(c.rating)) : '',
+    timeline(c),
+    priorityPicker(c),
     c.aiSummary ? h('p', { class: 'ai' }, '🤖 ' + c.aiSummary) : '',
     (c.repairable === true || c.repairable === false) ? h('div', { class: c.repairable ? 'rep yes' : 'rep no' },
       h('b', {}, c.repairable ? '✅ تقرير الموظف: ممكن صيانتها' : '❌ تقرير الموظف: غير ممكن صيانتها'),
       c.branch ? h('div', {}, 'الفرع: ' + c.branch) : '',
       (c.repairable && c.materials) ? h('div', {}, 'المواد المطلوبة: ' + c.materials) : '') : '',
     c.reply ? h('p', { class: 'reply' }, 'رد الموظف: ' + c.reply) : '',
-    c.status === 'new' ? h('button', { class: 'act', onclick: () => window.api.analyze(c.id) }, 'تحليل وتوجيه الآن') : ''
+    c.status === 'new' ? h('button', { class: 'act', onclick: () => window.api.analyze(c.id) }, 'تحليل وتوجيه الآن') : '',
+    logButton(c.id)
   );
 }
 
@@ -112,10 +175,15 @@ function crewStats() {
     const rows = [...names].map((k) => {
       const cs = inDept.filter((c) => c.crew === k);
       const open = cs.filter((c) => c.status !== 'resolved').length;
-      return { crew: k, total: cs.length, open, done: cs.length - open };
+      const rs = cs.filter((c) => c.rating > 0);
+      const dn = cs.filter((c) => c.resolvedMs);
+      const avgT = dn.length ? fmtD(dn.reduce((a, c) => a + (c.resolvedMs - workStart(c)), 0) / dn.length) : '-';
+      return { crew: k, total: cs.length, open, done: cs.length - open, avgT, avg: rs.length ? (rs.reduce((a, c) => a + c.rating, 0) / rs.length).toFixed(1) + ' (' + rs.length + ')' : '-' };
     });
     const un = inDept.filter((c) => !c.crew && c.status !== 'resolved').length;
-    return { dept, rows, unassigned: un };
+    const allR = inDept.filter((c) => c.rating > 0);
+    const deptAvg = allR.length ? (allR.reduce((a, c) => a + c.rating, 0) / allR.length).toFixed(1) + ' من 5 (' + allR.length + ' تقييم)' : 'لا تقييمات بعد';
+    return { dept, rows, unassigned: un, deptAvg };
   }).filter((d) => d.rows.length);
 }
 
@@ -128,13 +196,56 @@ function renderCrews() {
         h('span', { class: 'chip' }, 'عدد الكوادر: ' + d.rows.length),
         h('span', { class: 'chip warn' }, 'كوادر مشغولة: ' + busy),
         h('span', { class: 'chip ok' }, 'كوادر متاحة: ' + (d.rows.length - busy)),
-        h('span', { class: 'chip' }, 'شكاوى غير مُسندة: ' + d.unassigned)),
+        h('span', { class: 'chip' }, 'شكاوى غير مُسندة: ' + d.unassigned),
+        h('span', { class: 'chip' }, '⭐ تقييم القسم: ' + d.deptAvg)),
       h('table', {},
-        h('tr', {}, ...['الكادر', 'المُسند إليه', 'المتبقي', 'المنجز'].map((x) => h('th', {}, x))),
+        h('tr', {}, ...['الكادر', 'المُسند إليه', 'المتبقي', 'المنجز', 'متوسط زمن الإنجاز', 'التقييم'].map((x) => h('th', {}, x))),
         ...d.rows.map((r) => h('tr', {},
           h('td', {}, r.crew), h('td', {}, String(r.total)),
-          h('td', { class: r.open ? 'warn' : '' }, String(r.open)), h('td', {}, String(r.done))))));
+          h('td', { class: r.open ? 'warn' : '' }, String(r.open)), h('td', {}, String(r.done)), h('td', {}, r.avgT), h('td', {}, r.avg)))));
   });
+}
+
+function renderBusy() {
+  const stats = crewStats();
+  if (!stats.length) return [h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد (أضف الحقل crews في مستند الموظف)')];
+  const now = Date.now();
+  const out = [];
+  let totalBusy = 0, totalFree = 0;
+  const blocks = stats.map((d) => {
+    const busy = [], free = [];
+    d.rows.forEach((r) => {
+      const jobs = list.filter((c) => c.department === d.dept && c.crew === r.crew && c.status !== 'resolved' && c.status !== 'new');
+      (jobs.length ? busy : free).push({ crew: r.crew, jobs });
+    });
+    busy.sort((a, b) => b.jobs.length - a.jobs.length);
+    totalBusy += busy.length; totalFree += free.length;
+    return { dept: d.dept, busy, free };
+  });
+  out.push(h('div', { class: 'card' },
+    h('h3', {}, 'حالة الكوادر الآن'),
+    h('div', { class: 'sum' },
+      h('span', { class: 'chip warn' }, '🔴 مشغولة: ' + totalBusy),
+      h('span', { class: 'chip ok' }, '🟢 متاحة: ' + totalFree))));
+  blocks.forEach((b) => {
+    out.push(h('div', { class: 'card' },
+      h('h3', {}, b.dept),
+      b.free.length ? h('div', { class: 'sum' }, h('b', {}, 'متاحة: '), ...b.free.map((f) => h('span', { class: 'chip ok' }, '🟢 ' + f.crew))) : '',
+      !b.busy.length ? h('p', { class: 'small' }, 'لا توجد كوادر مشغولة في هذا القسم') : ''));
+    b.busy.forEach((k) => {
+      out.push(h('div', { class: 'card' },
+        h('h3', {}, '🚧 ' + k.crew + ' — مشغول (' + k.jobs.length + ' ' + (k.jobs.length === 1 ? 'عمل' : 'أعمال') + ') • ' + b.dept),
+        ...k.jobs.map((c) => {
+          const since = c.crewMs || c.startedMs || c.routedMs || c.createdMs;
+          return h('div', { class: c.priority === 'urgent' ? 'rep no' : 'rep yes' },
+            h('b', {}, (c.priority === 'urgent' ? '🚨 ' : '') + c.title),
+            h('div', { class: 'small' }, 'الأولوية: ' + (PRI[c.priority] || '-') + (c.branch ? ' • الفرع: ' + c.branch : '')),
+            since ? h('div', { class: 'small' }, 'استلمها: ' + fmtT(since) + ' • مضى: ' + fmtD(now - since)) : '',
+            c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 الموقع على الخريطة') : '');
+        })));
+    });
+  });
+  return out;
 }
 
 function renderReport() {
@@ -208,14 +319,19 @@ function render() {
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
   if (tab === 'settings') return v.append(...renderSettings());
   if (tab === 'report') return v.append(...renderReport());
+  if (tab === 'crews') return v.append(...renderBusy());
   if (tab === 'manual') return v.append(...renderManual());
   const items = list.filter((c) => (tab === 'new' ? c.status === 'new' : c.status !== 'new'));
   if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
+  // الأكثر إلحاحاً أولاً (ما لم تُحل)، ثم الأحدث
+  const rank = (c) => (c.status === 'resolved' ? 9 : (PRI_RANK[c.priority] ?? 4));
+  items.sort((a, b) => rank(a) - rank(b) || b.createdMs - a.createdMs);
   v.append(...items.map(card));
 }
 
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
 window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
-window.api.onStaff((d) => { staff = d; if (tab === 'report') render(); });
+window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews') render(); });
+setInterval(() => { if (tab === 'crews') render(); }, 60000);
 window.api.onLog((m) => { document.getElementById('log').textContent = m; });
 window.api.getSettings().then((s) => { settings = s; render(); });
