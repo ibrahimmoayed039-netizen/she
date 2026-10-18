@@ -28,6 +28,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -115,12 +117,17 @@ fun compressImage(ctx: Context, uri: Uri): String {
 }
 
 /** إنجاز العمل: يُنهي الشكوى ويُرسل الرد وصورة بعد الصيانة للمواطن والمدير دفعة واحدة */
-fun completeWork(id: String, reply: String, afterB64: String) {
+fun completeWork(id: String, reply: String, afterB64: String, onResult: (String?) -> Unit) {
     val ts = FieldValue.serverTimestamp()
     val m = mutableMapOf<String, Any>("status" to "resolved", "reply" to reply, "resolvedAt" to ts, "updatedAt" to ts)
     if (afterB64.isNotEmpty()) { m["afterImageB64"] = afterB64; m["afterAt"] = ts }
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
-    logEvent(id, "أنجز العمل وأرسله للمواطن والمدير — $reply")
+        .addOnSuccessListener { logEvent(id, "أنجز العمل وأرسله للمواطن والمدير — $reply"); onResult(null) }
+        .addOnFailureListener { e ->
+            val msg = e.message ?: "خطأ غير معروف"
+            onResult(if (msg.contains("PERMISSION_DENIED")) "رُفض الإرسال من الخادم: انشر قواعد Firestore الأحدث (Rules ← Publish) ثم أعد المحاولة"
+                     else "فشل الإرسال: $msg")
+        }
 }
 
 fun sendAfterPhoto(id: String, b64: String) {
@@ -288,7 +295,8 @@ fun Home(uid: String, email: String) {
 fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email: String) {
     var list by remember { mutableStateOf(listOf<Complaint>()) }
     var tab by remember { mutableIntStateOf(0) }
-    var selected by remember { mutableStateOf<Complaint?>(null) }
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = list.firstOrNull { it.id == selectedId }
 
     DisposableEffect(depts) {
         // مستمع لكل قسم ثم دمج النتائج
@@ -333,7 +341,7 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(shown, key = { it.id }) { c ->
-                        Card(Modifier.fillMaxWidth().clickable { selected = c }) {
+                        Card(Modifier.fillMaxWidth().clickable { selectedId = c.id }) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(c.title, style = MaterialTheme.typography.titleMedium)
                                 Text(if (c.priority == "urgent") "🚨 الأولوية: عاجلة" else "الأولوية: " + priorityAr(c.priority),
@@ -365,16 +373,18 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email
 
     selected?.let { c ->
         val busyCrews = list.filter { it.crew.isNotBlank() && it.status != "resolved" }.groupingBy { it.crew }.eachCount()
-        Detail(c, branches, crews, busyCrews) { selected = null }
+        Detail(c, branches, crews, busyCrews) { selectedId = null }
     }
 }
 
 @Composable
 fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews: Map<String, Int>, onClose: () -> Unit) {
-    var crew by remember { mutableStateOf(c.crew) }
+    var crew by rememberSaveable(c.id) { mutableStateOf(c.crew) }
     var err by remember { mutableStateOf("") }
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    var pendingAfter by remember { mutableStateOf("") }
+    var pendingAfter by rememberSaveable(c.id) { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val pickAfter = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             try { pendingAfter = compressImage(ctx, uri); err = "" } catch (e: Exception) { err = "تعذر قراءة الصورة" }
@@ -394,10 +404,10 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
             }
         onDispose { reg.remove() }
     }
-    var reply by remember { mutableStateOf(c.reply) }
-    var branch by remember { mutableStateOf(c.branch) }
-    var repairable by remember { mutableStateOf(c.repairable) }
-    var materials by remember { mutableStateOf(c.materials) }
+    var reply by rememberSaveable(c.id) { mutableStateOf(c.reply) }
+    var branch by rememberSaveable(c.id) { mutableStateOf(c.branch) }
+    var repairable by rememberSaveable(c.id) { mutableStateOf(c.repairable) }
+    var materials by rememberSaveable(c.id) { mutableStateOf(c.materials) }
     val bmp = remember(c.id) {
         if (c.imageB64.isEmpty()) null else try {
             val b = Base64.decode(c.imageB64, Base64.DEFAULT)
@@ -481,10 +491,21 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                     }
                     if (aft != null) Image(bitmap = aft, contentDescription = null, modifier = Modifier.fillMaxWidth())
                     OutlinedButton(onClick = { pickAfter.launch("image/*") }) { Text(if (aft == null) "📷 إرفاق صورة بعد الصيانة" else "📷 استبدال الصورة") }
-                    Button(onClick = {
+                    Button(enabled = !sending, onClick = {
                         if (reply.isBlank()) err = "اكتب ملخص العمل المنجز في خانة الرد"
-                        else { completeWork(c.id, reply.trim(), pendingAfter); onClose() }
-                    }) { Text("✅ إرسال الإنجاز للمواطن والمدير") }
+                        else {
+                            err = ""; sending = true
+                            completeWork(c.id, reply.trim(), pendingAfter) { e ->
+                                sending = false
+                                if (e == null) onClose() else err = e
+                            }
+                            scope.launch {
+                                delay(20000)
+                                if (sending) { sending = false; err = "الاتصال بطيء؛ إن لم يظهر الإنجاز بعد قليل تحقق من الإنترنت" }
+                            }
+                        }
+                    }) { Text(if (sending) "جارٍ الإرسال..." else "✅ إرسال الإنجاز للمواطن والمدير") }
+                    if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
                 }
                 if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
                 if (history.isNotEmpty()) {

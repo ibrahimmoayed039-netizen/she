@@ -30,3 +30,19 @@ td.warn{color:#9a3412;font-weight:bold}
 .small{color:#555;font-size:13px}
 
 .card.urgent { border: 2px solid #d32f2f; background: #fff5f5; }
+
+nav button{font-size:13px;padding:10px 4px}
+select,input[type=date]{padding:6px 8px;border:1px solid #bbb;border-radius:6px;font-size:14px;background:#fff}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.bar label{margin:0;font-weight:normal;font-size:13px}
+.bar input[type=text]{width:180px}
+details.grp{background:#fff;border-radius:10px;box-shadow:0 1px 3px #0002;padding:8px 12px}
+details.grp>summary{cursor:pointer;font-weight:bold;padding:6px 0}
+details.grp>.card{box-shadow:none;border:1px solid #e5e7eb;margin:8px 0}
+.ba{display:flex;gap:12px;flex-wrap:wrap}
+.ba figure{margin:0}
+.ba figcaption{font-size:13px;color:#555}
+.ba img{cursor:zoom-in;max-width:260px;max-height:200px;border-radius:6px}
+.card img{cursor:zoom-in}
+.lb{position:fixed;top:0;right:0;bottom:0;left:0;background:#000c;display:flex;align-items:center;justify-content:center;z-index:99;cursor:zoom-out}
+.lb img{max-width:94%;max-height:94%;border-radius:6px}

@@ -206,6 +206,145 @@ function renderCrews() {
   });
 }
 
+// ---------------- تكبير الصور عند الضغط ----------------
+function zoom(src) {
+  const o = h('div', { class: 'lb', onclick: () => o.remove() }, h('img', { src }));
+  document.body.append(o);
+}
+
+// ---------------- تصنيف الشكاوى ----------------
+const DAY = 86400000;
+const DAYS_AR = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
+const dayIdx = (d) => (d.getDay() + 1) % 7; // السبت = 0
+const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const dayLabel = (d) => {
+  const t = new Date(), k = ymd(d);
+  if (k === ymd(t)) return 'اليوم — ' + d.toLocaleDateString('ar-IQ', { dateStyle: 'full' });
+  if (k === ymd(new Date(t.getTime() - DAY))) return 'أمس — ' + d.toLocaleDateString('ar-IQ', { dateStyle: 'full' });
+  return d.toLocaleDateString('ar-IQ', { dateStyle: 'full' });
+};
+const ORD = (arr, v) => { const i = arr.indexOf(v); return i < 0 ? 99 : i; };
+const speedOf = (c) => {
+  if (!c.resolvedMs) return { k: 9, l: 'غير منجزة بعد' };
+  const hrs = (c.resolvedMs - workStart(c)) / 3600000;
+  if (hrs < 1) return { k: 0, l: 'أقل من ساعة' };
+  if (hrs < 24) return { k: 1, l: 'أقل من يوم' };
+  if (hrs < 72) return { k: 2, l: 'من 1 إلى 3 أيام' };
+  return { k: 3, l: 'أكثر من 3 أيام' };
+};
+// طرق التصنيف: كل واحدة تعيد مفتاح الترتيب والعنوان؛ desc = الأحدث أولاً
+const CLS = {
+  day: { name: 'اليوم (التاريخ)', desc: true, f: (c) => { const d = new Date(c.createdMs); return { k: ymd(d), l: dayLabel(d) }; } },
+  week: { name: 'الأسبوع', desc: true, f: (c) => {
+    const d = new Date(c.createdMs); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - dayIdx(d));
+    return { k: ymd(d), l: 'أسبوع يبدأ السبت ' + d.toLocaleDateString('ar-IQ', { dateStyle: 'long' }) };
+  } },
+  month: { name: 'الشهر', desc: true, f: (c) => { const d = new Date(c.createdMs); return { k: ymd(d).slice(0, 7), l: d.toLocaleDateString('ar-IQ', { month: 'long', year: 'numeric' }) }; } },
+  weekday: { name: 'يوم الأسبوع', f: (c) => { const i = dayIdx(new Date(c.createdMs)); return { k: i, l: DAYS_AR[i] }; } },
+  daypart: { name: 'فترة اليوم', f: (c) => {
+    const hr = new Date(c.createdMs).getHours();
+    return hr < 6 ? { k: 0, l: 'الفجر (12 ص – 6 ص)' } : hr < 12 ? { k: 1, l: 'الصباح (6 ص – 12 ظ)' } : hr < 17 ? { k: 2, l: 'بعد الظهر (12 – 5 م)' } : hr < 21 ? { k: 3, l: 'المساء (5 – 9 م)' } : { k: 4, l: 'الليل (9 م – 12 ص)' };
+  } },
+  dept: { name: 'القسم', f: (c) => ({ k: c.department || '~', l: c.department || 'غير موجّهة' }) },
+  status: { name: 'الحالة', f: (c) => ({ k: ORD(['new', 'routed', 'in_progress', 'resolved'], c.status), l: STATUS[c.status] || c.status }) },
+  priority: { name: 'الأولوية', f: (c) => ({ k: ORD(['urgent', 'high', 'medium', 'low'], c.priority), l: 'أولوية ' + (PRI[c.priority] || 'غير محددة') }) },
+  crew: { name: 'الكادر', f: (c) => ({ k: c.crew || '~', l: c.crew ? '🚧 ' + c.crew : 'بدون كادر' }) },
+  branch: { name: 'الفرع', f: (c) => ({ k: c.branch || '~', l: c.branch || 'بدون فرع' }) },
+  speed: { name: 'سرعة الإنجاز', f: speedOf },
+  rating: { name: 'تقييم المواطن', f: (c) => c.rating ? { k: 5 - c.rating, l: '⭐'.repeat(c.rating) + ' (' + c.rating + ')' } : { k: 9, l: 'لم يُقيَّم' } },
+  dup: { name: 'المكررة', f: (c) => c.dupTitle ? { k: 1, l: '🔁 شكاوى مكررة' } : c.dupCount ? { k: 0, l: '📌 شكاوى تكررت (الأصلية)' } : { k: 2, l: 'عادية' } },
+};
+let cls = { by: 'day', status: 'all', dept: 'all', from: '', to: '', q: '' };
+let doneF = { dept: 'all', from: '', to: '', q: '', img: false };
+
+const allDepts = () => [...new Set([...(settings.departments || []), ...list.map((c) => c.department).filter(Boolean)])];
+const dateMs = (s, end) => (s ? new Date(s + (end ? 'T23:59:59' : 'T00:00:00')).getTime() : 0);
+
+function sel(opts, value, onch) {
+  const s = h('select', { onchange: (e) => onch(e.target.value) }, ...opts.map(([k, l]) => h('option', { value: k }, l)));
+  s.value = value;
+  return s;
+}
+function field(label, el) { return h('label', {}, label, h('br'), el); }
+function textBox(value, onin) { return h('input', { type: 'text', value, placeholder: 'بحث…', oninput: (e) => onin(e.target.value), onchange: () => render() }); }
+
+function renderClassify() {
+  const depts = allDepts();
+  const bar = h('div', { class: 'card bar' },
+    field('صنّف حسب', sel(Object.entries(CLS).map(([k, v]) => [k, v.name]), cls.by, (v) => { cls.by = v; render(); })),
+    field('الحالة', sel([['all', 'الكل'], ...Object.entries(STATUS)], cls.status, (v) => { cls.status = v; render(); })),
+    field('القسم', sel([['all', 'كل الأقسام'], ...depts.map((d) => [d, d])], cls.dept, (v) => { cls.dept = v; render(); })),
+    field('من تاريخ', h('input', { type: 'date', value: cls.from, onchange: (e) => { cls.from = e.target.value; render(); } })),
+    field('إلى تاريخ', h('input', { type: 'date', value: cls.to, onchange: (e) => { cls.to = e.target.value; render(); } })),
+    field('بحث', textBox(cls.q, (v) => { cls.q = v; })));
+  const f = dateMs(cls.from), t = dateMs(cls.to, true), q = cls.q.trim().toLowerCase();
+  const items = list.filter((c) =>
+    (cls.status === 'all' || c.status === cls.status) &&
+    (cls.dept === 'all' || c.department === cls.dept) &&
+    (!f || c.createdMs >= f) && (!t || c.createdMs <= t) &&
+    (!q || (c.title + ' ' + c.text + ' ' + c.name).toLowerCase().includes(q)));
+  const def = CLS[cls.by];
+  const groups = new Map();
+  items.forEach((c) => {
+    const g = def.f(c);
+    if (!groups.has(g.l)) groups.set(g.l, { k: g.k, l: g.l, items: [] });
+    groups.get(g.l).items.push(c);
+  });
+  const sorted = [...groups.values()].sort((a, b) => (a.k < b.k ? -1 : a.k > b.k ? 1 : 0) * (def.desc ? -1 : 1));
+  const out = [bar, h('div', { class: 'sum' },
+    h('span', { class: 'chip' }, 'الشكاوى: ' + items.length),
+    h('span', { class: 'chip' }, 'المجموعات: ' + sorted.length),
+    h('span', { class: 'chip ok' }, 'المنجزة: ' + items.filter((c) => c.status === 'resolved').length),
+    h('span', { class: 'chip warn' }, 'غير المنجزة: ' + items.filter((c) => c.status !== 'resolved').length))];
+  if (!sorted.length) out.push(h('div', { class: 'empty' }, 'لا توجد شكاوى مطابقة'));
+  sorted.forEach((g, i) => {
+    g.items.sort((a, b) => b.createdMs - a.createdMs);
+    const done = g.items.filter((c) => c.status === 'resolved').length;
+    const d = h('details', { class: 'grp' },
+      h('summary', {}, g.l + ' — ' + g.items.length + ' شكوى (منجزة ' + done + ')'),
+      ...g.items.map(card));
+    if (i < 2) d.open = true;
+    out.push(d);
+  });
+  return out;
+}
+
+// ---------------- الأعمال المنجزة (مع صور قبل وبعد) ----------------
+function renderDone() {
+  const bar = h('div', { class: 'card bar' },
+    field('القسم', sel([['all', 'كل الأقسام'], ...allDepts().map((d) => [d, d])], doneF.dept, (v) => { doneF.dept = v; render(); })),
+    field('أُنجزت من', h('input', { type: 'date', value: doneF.from, onchange: (e) => { doneF.from = e.target.value; render(); } })),
+    field('إلى', h('input', { type: 'date', value: doneF.to, onchange: (e) => { doneF.to = e.target.value; render(); } })),
+    field('بحث', textBox(doneF.q, (v) => { doneF.q = v; })),
+    h('label', {}, h('input', { type: 'checkbox', checked: doneF.img, onchange: (e) => { doneF.img = e.target.checked; render(); } }), ' مع صورة بعد الصيانة فقط'));
+  const f = dateMs(doneF.from), t = dateMs(doneF.to, true), q = doneF.q.trim().toLowerCase();
+  const items = list.filter((c) => c.status === 'resolved' &&
+    (doneF.dept === 'all' || c.department === doneF.dept) &&
+    (!doneF.img || c.afterImageB64) &&
+    (!f || (c.resolvedMs || c.createdMs) >= f) && (!t || (c.resolvedMs || c.createdMs) <= t) &&
+    (!q || (c.title + ' ' + c.text + ' ' + c.reply + ' ' + c.crew).toLowerCase().includes(q)))
+    .sort((a, b) => (b.resolvedMs || 0) - (a.resolvedMs || 0));
+  const withImg = items.filter((c) => c.afterImageB64).length;
+  const out = [bar, h('div', { class: 'sum' },
+    h('span', { class: 'chip ok' }, 'الأعمال المنجزة: ' + items.length),
+    h('span', { class: 'chip' }, 'مع صورة بعد الصيانة: ' + withImg))];
+  if (!items.length) out.push(h('div', { class: 'empty' }, 'لا توجد أعمال منجزة مطابقة'));
+  items.forEach((c) => {
+    out.push(h('div', { class: 'card' },
+      h('h3', {}, '✅ ' + c.title),
+      h('small', {}, [c.department, c.crew ? 'الكادر: ' + c.crew : '', c.branch ? 'الفرع: ' + c.branch : ''].filter(Boolean).join(' • ')),
+      h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '')),
+      c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
+      (c.materials && c.repairable) ? h('p', { class: 'small' }, 'المواد: ' + c.materials) : '',
+      (c.imageB64 || c.afterImageB64) ? h('div', { class: 'ba' },
+        c.imageB64 ? h('figure', {}, h('figcaption', {}, 'قبل (من المواطن)'), h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 })) : '',
+        c.afterImageB64 ? h('figure', {}, h('figcaption', {}, 'بعد الصيانة'), h('img', { src: 'data:image/jpeg;base64,' + c.afterImageB64 })) : '') : '',
+      c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 الموقع') : '',
+      logButton(c.id)));
+  });
+  return out;
+}
+
 function renderBusy() {
   const stats = crewStats();
   if (!stats.length) return [h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد (أضف الحقل crews في مستند الموظف)')];
@@ -320,6 +459,8 @@ function render() {
   if (tab === 'settings') return v.append(...renderSettings());
   if (tab === 'report') return v.append(...renderReport());
   if (tab === 'crews') return v.append(...renderBusy());
+  if (tab === 'classify') return v.append(...renderClassify());
+  if (tab === 'done') return v.append(...renderDone());
   if (tab === 'manual') return v.append(...renderManual());
   const items = list.filter((c) => (tab === 'new' ? c.status === 'new' : c.status !== 'new'));
   if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
@@ -329,6 +470,7 @@ function render() {
   v.append(...items.map(card));
 }
 
+document.getElementById('view').addEventListener('click', (e) => { if (e.target.tagName === 'IMG' && e.target.src) zoom(e.target.src); });
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
 window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
 window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews') render(); });
