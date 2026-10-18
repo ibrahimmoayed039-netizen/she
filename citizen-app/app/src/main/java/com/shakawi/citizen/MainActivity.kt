@@ -1,8 +1,6 @@
 package com.shakawi.citizen
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -10,11 +8,6 @@ import android.os.Bundle
 import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.compose.foundation.Image
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.content.ContextCompat
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,16 +34,14 @@ import java.io.ByteArrayOutputStream
 
 data class Complaint(
     val id: String, val title: String, val text: String, val department: String,
-    val status: String, val reply: String, val createdMs: Long,
-    val resolvedImageB64: String, val hasLocation: Boolean
+    val status: String, val reply: String, val createdMs: Long
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.id, d.getString("title") ?: "", d.getString("text") ?: "",
     d.getString("department") ?: "", d.getString("status") ?: "new",
     d.getString("reply") ?: "",
-    d.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis(),
-    d.getString("resolvedImageB64") ?: "", d.getDouble("lat") != null
+    d.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis()
 )
 
 fun statusAr(s: String) = when (s) {
@@ -137,33 +128,7 @@ fun NewTab(onSent: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var img by remember { mutableStateOf<Uri?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var loc by remember { mutableStateOf<Triple<Double, Double, Float>?>(null) }
-    var locBusy by remember { mutableStateOf(false) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { img = it }
-
-    // يحدد الموقع الحالي بدقة عالية (يتطلب إذن الموقع وتفعيل GPS)
-    fun fetchLocation() {
-        locBusy = true
-        scope.launch {
-            try {
-                val client = LocationServices.getFusedLocationProviderClient(ctx)
-                val l = withTimeoutOrNull(15000) {
-                    client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-                } ?: client.lastLocation.await()
-                if (l != null) loc = Triple(l.latitude, l.longitude, l.accuracy)
-                else Toast.makeText(ctx, "تعذر تحديد الموقع، فعّل خدمة الموقع (GPS) وحاول مرة أخرى", Toast.LENGTH_LONG).show()
-            } catch (e: SecurityException) {
-                Toast.makeText(ctx, "لا يوجد إذن للموقع", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Toast.makeText(ctx, "تعذر تحديد الموقع: " + (e.message ?: ""), Toast.LENGTH_LONG).show()
-            }
-            locBusy = false
-        }
-    }
-    val locPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        if (r.values.any { it }) fetchLocation()
-        else Toast.makeText(ctx, "لم يتم منح إذن الموقع", Toast.LENGTH_LONG).show()
-    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -178,25 +143,6 @@ fun NewTab(onSent: () -> Unit) {
         OutlinedButton(onClick = { pick.launch("image/*") }) {
             Text(if (img == null) "إرفاق صورة" else "تم اختيار صورة ✓ (تغيير)")
         }
-        OutlinedButton(
-            enabled = !locBusy,
-            modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                if (granted) fetchLocation()
-                else locPerm.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            }
-        ) {
-            Text(
-                when {
-                    locBusy -> "جارٍ تحديد الموقع..."
-                    loc == null -> "📍 إرسال موقعي الحالي"
-                    else -> "📍 تم تحديد الموقع ✓ (دقة ${loc!!.third.toInt()} م) — تحديث"
-                }
-            )
-        }
-        if (loc != null) TextButton(onClick = { loc = null }) { Text("إزالة الموقع") }
         Button(
             enabled = !busy && title.isNotBlank() && text.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
@@ -219,7 +165,6 @@ fun NewTab(onSent: () -> Unit) {
                             "status" to "new", "reply" to "",
                             "createdAt" to FieldValue.serverTimestamp()
                         )
-                        loc?.let { data["lat"] = it.first; data["lng"] = it.second; data["locAccuracy"] = it.third.toDouble() }
                         val sent = withTimeoutOrNull(10000) {
                             FirebaseFirestore.getInstance().collection("complaints").add(data).await()
                         }
@@ -228,7 +173,7 @@ fun NewTab(onSent: () -> Unit) {
                             if (sent != null) "تم إرسال الشكوى" else "سيتم الإرسال عند توفر الإنترنت",
                             Toast.LENGTH_LONG
                         ).show()
-                        title = ""; text = ""; img = null; loc = null
+                        title = ""; text = ""; img = null
                         onSent()
                     } catch (e: Exception) {
                         Toast.makeText(ctx, e.message ?: "حدث خطأ", Toast.LENGTH_LONG).show()
@@ -264,19 +209,6 @@ fun MyTab(uid: String?) {
                     Text("الحالة: " + statusAr(c.status), color = MaterialTheme.colorScheme.primary)
                     if (c.department.isNotBlank()) Text("القسم: " + c.department)
                     Text(c.text)
-                    if (c.hasLocation) Text("📍 تم إرسال موقعك مع الشكوى", style = MaterialTheme.typography.bodySmall)
-                    if (c.resolvedImageB64.isNotBlank()) {
-                        val bmp = remember(c.id, c.resolvedImageB64.length) {
-                            try {
-                                val b = Base64.decode(c.resolvedImageB64, Base64.DEFAULT)
-                                BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap()
-                            } catch (e: Exception) { null }
-                        }
-                        if (bmp != null) {
-                            Text("📷 صورة بعد الحل:", style = MaterialTheme.typography.titleSmall)
-                            Image(bitmap = bmp, contentDescription = "صورة بعد الحل", modifier = Modifier.fillMaxWidth())
-                        }
-                    }
                     if (c.reply.isNotBlank()) Text("رد الجهة المختصة: " + c.reply, style = MaterialTheme.typography.bodyMedium)
                 }
             }

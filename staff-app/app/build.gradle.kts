@@ -9,22 +9,8 @@ android {
         applicationId = "com.shakawi.staff"
         minSdk = 24
         targetSdk = 34
-        // رقم الإصدار يزيد تلقائياً مع كل بناء في GitHub Actions ليقبله أندرويد كتحديث فوق القديم
-        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionCode = run
-        versionName = "1.0.$run"
-    }
-    // مفتاح توقيع ثابت (shakawi.jks في جذر المستودع) حتى يبقى توقيع كل البنايات واحداً فيُحدَّث التطبيق دون حذفه
-    signingConfigs {
-        create("fixed") {
-            storeFile = rootProject.file("../shakawi.jks")
-            storePassword = "shakawi123"
-            keyAlias = "shakawi"
-            keyPassword = "shakawi123"
-        }
-    }
-    buildTypes {
-        getByName("debug") { signingConfig = signingConfigs.getByName("fixed") }
+        versionCode = 1
+        versionName = "1.0"
     }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }

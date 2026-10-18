@@ -1,14 +1,6 @@
 const STATUS = { new: 'بانتظار التحليل', routed: 'تم التوجيه', in_progress: 'قيد المعالجة', resolved: 'تم الحل' };
 const PRI = { urgent: 'عاجلة', high: 'عالية', medium: 'متوسطة', low: 'منخفضة' };
-const PRI_RANK = { urgent: 0, high: 1, medium: 2, low: 3 };
-const TABS = ['new', 'routed', 'in_progress', 'resolved'];
-const NONE = '__none'; // شكاوى لم تُصنَّف بعد (بلا قسم)
-
-function load(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
-function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
-
-let tab = 'new', list = [], settings = {};
-let fDept = load('fDept', ''), fSort = load('fSort', 'newest');
+let tab = 'new', list = [], settings = {}, staff = [];
 
 function h(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -21,76 +13,20 @@ function h(tag, props = {}, ...kids) {
   return e;
 }
 
-// ===== التوقيت =====
-function fmt(ms) {
-  return ms ? new Date(ms).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'medium', timeStyle: 'short' }) : '';
-}
-function span(ms) { // مدة بصيغة عربية
-  const m = Math.max(0, Math.round(ms / 60000));
-  if (m < 1) return 'أقل من دقيقة';
-  if (m < 60) return m + ' دقيقة';
-  const hr = Math.round(m / 60);
-  if (hr < 24) return hr + ' ساعة';
-  return Math.round(hr / 24) + ' يوم';
-}
-function ago(ms) { return Date.now() - ms < 60000 ? 'الآن' : 'قبل ' + span(Date.now() - ms); }
-
-// ===== الفرز والتصفية =====
-const st = (c) => (TABS.includes(c.status) ? c.status : 'routed');
-const deptKey = (c) => c.department || NONE;
-const deptName = (k) => (k === NONE ? 'غير مصنّفة' : k);
-
-function sorted(arr) {
-  const a = arr.slice();
-  if (fSort === 'oldest') return a.sort((x, y) => x.createdMs - y.createdMs);
-  if (fSort === 'priority') {
-    return a.sort((x, y) => (PRI_RANK[x.priority] ?? 9) - (PRI_RANK[y.priority] ?? 9) || x.createdMs - y.createdMs);
-  }
-  return a.sort((x, y) => y.createdMs - x.createdMs); // newest + أساس التجميع
-}
-
-function refreshBar() {
-  const counts = {};
-  list.forEach((c) => { counts[deptKey(c)] = (counts[deptKey(c)] || 0) + 1; });
-  const names = [...(settings.departments || [])];
-  Object.keys(counts).forEach((k) => { if (k !== NONE && !names.includes(k)) names.push(k); });
-  const opts = [['', `كل الأقسام (${list.length})`], ...names.map((n) => [n, `${n} (${counts[n] || 0})`])];
-  if (counts[NONE]) opts.push([NONE, `غير مصنّفة (${counts[NONE]})`]);
-  const sel = document.getElementById('fDept');
-  const sig = JSON.stringify(opts);
-  if (sel.dataset.sig !== sig) {
-    sel.dataset.sig = sig;
-    sel.replaceChildren(...opts.map(([v, t]) => h('option', { value: v }, t)));
-  }
-  if (!opts.some(([v]) => v === fDept)) fDept = '';
-  sel.value = fDept;
-  document.getElementById('fSort').value = fSort;
-}
-
-// ===== البطاقة =====
 function card(c) {
-  const rows = [
-    ['📥', 'استُلمت', c.createdMs, c.status === 'resolved' ? '' : ' (' + ago(c.createdMs) + ')'],
-    ['🧭', 'وُجّهت إلى القسم', c.routedMs, ''],
-    ['👁', 'اطّلع عليها الموظف', c.seenMs, ''],
-    ['🔧', 'بدأت معالجتها', c.startedMs, ''],
-    ['✅', 'تم حلها', c.resolvedMs, c.resolvedMs && c.createdMs ? ' (استغرقت ' + span(c.resolvedMs - c.createdMs) + ')' : ''],
-  ].filter((r) => r[2]);
+  const meta = [STATUS[c.status] || c.status, c.department, c.priority ? 'أولوية ' + PRI[c.priority] : ''].filter(Boolean).join(' • ');
   return h('div', { class: 'card' },
     h('h3', {}, c.title),
-    h('div', { class: 'row' },
-      h('span', { class: 'badge s-' + c.status }, STATUS[c.status] || c.status),
-      c.department ? h('span', { class: 'chip' }, c.department) : '',
-      c.priority ? h('span', { class: 'chip p-' + c.priority }, 'أولوية ' + PRI[c.priority]) : ''),
-    (c.handledBy && c.status !== 'routed' && c.status !== 'new') ? h('div', { class: 'who' }, '👤 الموظف: ' + c.handledBy) : '',
-    (c.handledBy && c.status === 'routed' && c.seenMs) ? h('div', { class: 'who' }, '👤 اطّلع عليها: ' + c.handledBy) : '',
-    rows.length ? h('div', { class: 'tl' }, rows.map((r) => h('div', {}, `${r[0]} ${r[1]}: ${fmt(r[2])}${r[3]}`))) : '',
+    h('small', {}, meta),
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     h('p', {}, c.text),
-    (c.lat != null && c.lng != null) ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 فتح موقع الشكوى في الخرائط') : '',
-    c.resolvedImageB64 ? h('div', {}, h('div', { class: 'who' }, '📷 صورة بعد الحل'), h('img', { src: 'data:image/jpeg;base64,' + c.resolvedImageB64 })) : '',
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + c.name + ' ' + c.phone) : '',
+    c.crew ? h('p', { class: 'rep yes' }, '🚧 الكادر المسؤول: ' + c.crew) : '',
     c.aiSummary ? h('p', { class: 'ai' }, '🤖 ' + c.aiSummary) : '',
+    (c.repairable === true || c.repairable === false) ? h('div', { class: c.repairable ? 'rep yes' : 'rep no' },
+      h('b', {}, c.repairable ? '✅ تقرير الموظف: ممكن صيانتها' : '❌ تقرير الموظف: غير ممكن صيانتها'),
+      c.branch ? h('div', {}, 'الفرع: ' + c.branch) : '',
+      (c.repairable && c.materials) ? h('div', {}, 'المواد المطلوبة: ' + c.materials) : '') : '',
     c.reply ? h('p', { class: 'reply' }, 'رد الموظف: ' + c.reply) : '',
     c.status === 'new' ? h('button', { class: 'act', onclick: () => window.api.analyze(c.id) }, 'تحليل وتوجيه الآن') : ''
   );
@@ -135,42 +71,151 @@ function renderSettings() {
             departments: depts.value.split('\n').map((s) => s.trim()).filter(Boolean),
           };
           await window.api.setSettings(settings);
-          await window.api.connect(); refreshBar();
+          await window.api.connect();
         },
       }, 'حفظ وإعادة الاتصال'))
   ];
 }
 
-function render() {
-  const v = document.getElementById('view');
-  v.replaceChildren();
-  const isSettings = tab === 'settings';
-  document.getElementById('bar').hidden = isSettings;
-  refreshBar();
-  const scoped = list.filter((c) => !fDept || deptKey(c) === fDept);
-  document.querySelectorAll('nav button').forEach((b) => {
-    b.classList.toggle('on', b.dataset.t === tab);
-    if (TABS.includes(b.dataset.t)) b.textContent = `${STATUS[b.dataset.t]} (${scoped.filter((c) => st(c) === b.dataset.t).length})`;
-  });
-  if (isSettings) return v.append(...renderSettings());
-  const items = sorted(scoped.filter((c) => st(c) === tab));
-  if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
-  if (fSort !== 'dept') return v.append(...items.map(card));
-  // تجميع حسب القسم بترتيب الأقسام في الإعدادات
-  const order = [...(settings.departments || []), NONE];
-  const keys = [...new Set(items.map(deptKey))].sort((a, b) => {
-    const ia = order.indexOf(a), ib = order.indexOf(b);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-  });
-  keys.forEach((k) => {
-    const g = items.filter((c) => deptKey(c) === k);
-    v.append(h('h2', { class: 'grp' }, `${deptName(k)} (${g.length})`), ...g.map(card));
+function branchStats() {
+  const depts = (settings.departments && settings.departments.length)
+    ? settings.departments
+    : [...new Set(list.map((c) => c.department).filter(Boolean))];
+  return depts.map((dept) => {
+    const names = new Set();
+    staff.filter((s) => s.departments.includes(dept)).forEach((s) => s.branches.forEach((b) => names.add(b)));
+    const inDept = list.filter((c) => c.department === dept && c.status !== 'new');
+    inDept.forEach((c) => { if (c.branch) names.add(c.branch); });
+    const rows = [...names].map((b) => {
+      const cs = inDept.filter((c) => c.branch === b);
+      const open = cs.filter((c) => c.status !== 'resolved').length;
+      return {
+        branch: b, total: cs.length, open, done: cs.length - open,
+        can: cs.filter((c) => c.repairable === true).length,
+        cant: cs.filter((c) => c.repairable === false).length,
+      };
+    });
+    const nb = inDept.filter((c) => !c.branch);
+    return { dept, rows, noBranchTotal: nb.length, noBranchOpen: nb.filter((c) => c.status !== 'resolved').length };
+  }).filter((d) => d.rows.length || d.noBranchTotal);
+}
+
+function crewStats() {
+  const depts = (settings.departments && settings.departments.length)
+    ? settings.departments
+    : [...new Set(list.map((c) => c.department).filter(Boolean))];
+  return depts.map((dept) => {
+    const names = new Set();
+    staff.filter((s) => s.departments.includes(dept)).forEach((s) => (s.crews || []).forEach((k) => names.add(k)));
+    const inDept = list.filter((c) => c.department === dept && c.status !== 'new');
+    inDept.forEach((c) => { if (c.crew) names.add(c.crew); });
+    const rows = [...names].map((k) => {
+      const cs = inDept.filter((c) => c.crew === k);
+      const open = cs.filter((c) => c.status !== 'resolved').length;
+      return { crew: k, total: cs.length, open, done: cs.length - open };
+    });
+    const un = inDept.filter((c) => !c.crew && c.status !== 'resolved').length;
+    return { dept, rows, unassigned: un };
+  }).filter((d) => d.rows.length);
+}
+
+function renderCrews() {
+  return crewStats().map((d) => {
+    const busy = d.rows.filter((r) => r.open > 0).length;
+    return h('div', { class: 'card' },
+      h('h3', {}, 'كوادر الصيانة — ' + d.dept),
+      h('div', { class: 'sum' },
+        h('span', { class: 'chip' }, 'عدد الكوادر: ' + d.rows.length),
+        h('span', { class: 'chip warn' }, 'كوادر مشغولة: ' + busy),
+        h('span', { class: 'chip ok' }, 'كوادر متاحة: ' + (d.rows.length - busy)),
+        h('span', { class: 'chip' }, 'شكاوى غير مُسندة: ' + d.unassigned)),
+      h('table', {},
+        h('tr', {}, ...['الكادر', 'المُسند إليه', 'المتبقي', 'المنجز'].map((x) => h('th', {}, x))),
+        ...d.rows.map((r) => h('tr', {},
+          h('td', {}, r.crew), h('td', {}, String(r.total)),
+          h('td', { class: r.open ? 'warn' : '' }, String(r.open)), h('td', {}, String(r.done))))));
   });
 }
 
+function renderReport() {
+  const stats = branchStats();
+  const crewCards = renderCrews();
+  if (!stats.length && !crewCards.length) return [h('div', { class: 'empty' }, 'لا توجد بيانات بعد')];
+  return [...stats.map((d) => {
+    const working = d.rows.filter((r) => r.open > 0).length;
+    const finished = d.rows.filter((r) => r.total > 0 && r.open === 0).length;
+    const idle = d.rows.filter((r) => r.total === 0).length;
+    return h('div', { class: 'card' },
+      h('h3', {}, d.dept),
+      h('div', { class: 'sum' },
+        h('span', { class: 'chip' }, 'عدد الفروع: ' + d.rows.length),
+        h('span', { class: 'chip warn' }, 'فروع لديها عمل متبقٍ: ' + working),
+        h('span', { class: 'chip ok' }, 'فروع أنجزت كل شكاواها: ' + finished),
+        h('span', { class: 'chip' }, 'فروع بلا شكاوى: ' + idle)),
+      d.rows.length ? h('table', {},
+        h('tr', {}, ...['الفرع', 'الشكاوى', 'المتبقي', 'المنجز', 'ممكن صيانتها', 'غير ممكن'].map((x) => h('th', {}, x))),
+        ...d.rows.map((r) => h('tr', {},
+          h('td', {}, r.branch), h('td', {}, String(r.total)),
+          h('td', { class: r.open ? 'warn' : '' }, String(r.open)),
+          h('td', {}, String(r.done)), h('td', {}, String(r.can)), h('td', {}, String(r.cant))))) : '',
+      d.noBranchTotal ? h('p', { class: 'small' }, 'شكاوى لم يُحدَّد لها فرع: ' + d.noBranchTotal + ' (المتبقي منها ' + d.noBranchOpen + ')') : '');
+  }), ...crewCards];
+}
+
+let draft = { title: '', text: '', name: '', phone: '', department: '', priority: 'medium', imageB64: '' };
+
+function renderManual() {
+  const inp = (key, ph) => h('input', { type: 'text', value: draft[key], placeholder: ph, oninput: (e) => { draft[key] = e.target.value; } });
+  const text = h('textarea', { value: draft.text, placeholder: 'تفاصيل الشكوى كما ذكرها المواطن', oninput: (e) => { draft.text = e.target.value; } });
+  const dept = h('select', { onchange: (e) => { draft.department = e.target.value; } },
+    h('option', { value: '' }, 'تحليل وتوجيه تلقائي'),
+    ...(settings.departments || []).map((d) => h('option', { value: d }, d)));
+  dept.value = draft.department;
+  const pri = h('select', { onchange: (e) => { draft.priority = e.target.value; } },
+    ...Object.entries(PRI).map(([k, v]) => h('option', { value: k }, v)));
+  pri.value = draft.priority;
+  const preview = h('img', { src: draft.imageB64 ? 'data:image/jpeg;base64,' + draft.imageB64 : '' });
+  preview.hidden = !draft.imageB64;
+  return [h('div', { class: 'card' },
+    h('h3', {}, 'إدخال شكوى يدوياً'),
+    h('label', {}, 'عنوان الشكوى'), inp('title', 'مثال: حفرة في الشارع'),
+    h('label', {}, 'تفاصيل الشكوى'), text,
+    h('label', {}, 'اسم المواطن (اختياري)'), inp('name', ''),
+    h('label', {}, 'رقم الهاتف (اختياري)'), inp('phone', ''),
+    h('label', {}, 'القسم'), dept,
+    h('label', {}, 'الأولوية (تُستعمل عند اختيار قسم يدوياً)'), pri,
+    h('label', {}, 'صورة (اختيارية)'),
+    h('button', { class: 'act', onclick: async () => {
+      const b = await window.api.pickImage();
+      if (b) { draft.imageB64 = b; preview.src = 'data:image/jpeg;base64,' + b; preview.hidden = false; }
+    } }, 'اختيار صورة'),
+    h('button', { class: 'act', onclick: () => { draft.imageB64 = ''; preview.hidden = true; } }, 'إزالة الصورة'),
+    preview,
+    h('div', {}, h('button', { class: 'act', onclick: async () => {
+      const r = await window.api.addComplaint(draft);
+      if (r.ok) {
+        draft = { title: '', text: '', name: '', phone: '', department: '', priority: 'medium', imageB64: '' };
+        render();
+      } else {
+        document.getElementById('log').textContent = r.error;
+      }
+    } }, 'حفظ الشكوى')))];
+}
+
+function render() {
+  const v = document.getElementById('view');
+  v.replaceChildren();
+  document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+  if (tab === 'settings') return v.append(...renderSettings());
+  if (tab === 'report') return v.append(...renderReport());
+  if (tab === 'manual') return v.append(...renderManual());
+  const items = list.filter((c) => (tab === 'new' ? c.status === 'new' : c.status !== 'new'));
+  if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
+  v.append(...items.map(card));
+}
+
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
-document.getElementById('fDept').addEventListener('change', (e) => { fDept = e.target.value; save('fDept', fDept); render(); });
-document.getElementById('fSort').addEventListener('change', (e) => { fSort = e.target.value; save('fSort', fSort); render(); });
-window.api.onComplaints((d) => { list = d; if (tab !== 'settings') render(); else refreshBar(); });
+window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
+window.api.onStaff((d) => { staff = d; if (tab === 'report') render(); });
 window.api.onLog((m) => { document.getElementById('log').textContent = m; });
 window.api.getSettings().then((s) => { settings = s; render(); });

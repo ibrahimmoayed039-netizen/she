@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Notification, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -19,21 +19,30 @@ const store = new Store({
   },
 });
 
-let win, db, unsub = null;
+let win, db, unsub = null, unsubStaff = null;
 const busy = new Set();
 const failed = new Set();
-// حالة كل شكوى في اللقطة السابقة لاكتشاف ما فعله الموظف وإشعار المشغّل
-const prevState = new Map();
-let firstSnap = true;
-const tms = (t) => (t && t.toMillis ? t.toMillis() : 0);
-
-function notifyStaff(title, body) {
-  log(body);
-  try { if (Notification.isSupported()) new Notification({ title, body }).show(); } catch (e) { /* تجاهل */ }
-}
 
 function log(m) {
   if (win && !win.isDestroyed()) win.webContents.send('log', m);
+}
+
+// الفروع: مصفوفة، أو نص مفصول بفواصل في branches، أو فرع واحد في branch
+function toBranches(x) {
+  const out = [];
+  if (Array.isArray(x.branches)) out.push(...x.branches);
+  else if (typeof x.branches === 'string') out.push(...x.branches.split(/[،,;؛\n]/));
+  if (typeof x.branch === 'string') out.push(x.branch);
+  return [...new Set(out.map((v) => String(v).trim()).filter(Boolean))];
+}
+
+// الكوادر: مصفوفة، أو نص مفصول بفواصل في crews، أو كادر واحد في crew
+function toCrews(x) {
+  const out = [];
+  if (Array.isArray(x.crews)) out.push(...x.crews);
+  else if (typeof x.crews === 'string') out.push(...x.crews.split(/[،,;؛\n]/));
+  if (typeof x.crew === 'string') out.push(x.crew);
+  return [...new Set(out.map((v) => String(v).trim()).filter(Boolean))];
 }
 
 async function connect() {
@@ -41,7 +50,7 @@ async function connect() {
   if (!s.serviceAccountPath || !fs.existsSync(s.serviceAccountPath)) return log('اختر ملف مفتاح Firebase أولاً من الإعدادات');
   try {
     if (unsub) { unsub(); unsub = null; }
-    firstSnap = true; prevState.clear();
+    if (unsubStaff) { unsubStaff(); unsubStaff = null; }
     if (!admin.apps.length) {
       admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync(s.serviceAccountPath, 'utf8'))) });
     }
@@ -54,32 +63,28 @@ async function connect() {
             id: d.id, title: x.title || '', text: x.text || '', imageB64: x.imageB64 || '',
             name: x.name || '', phone: x.phone || '', department: x.department || '',
             priority: x.priority || '', aiSummary: x.aiSummary || '', status: x.status || 'new',
-            reply: x.reply || '', createdMs: tms(x.createdAt),
-            routedMs: tms(x.routedAt), seenMs: tms(x.seenAt), startedMs: tms(x.startedAt), resolvedMs: tms(x.resolvedAt),
-            handledBy: x.handledBy || '',
-            lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
-            resolvedImageB64: x.resolvedImageB64 || '',
+            reply: x.reply || '', createdMs: x.createdAt ? x.createdAt.toMillis() : 0,
+            branch: x.branch || '', repairable: typeof x.repairable === 'boolean' ? x.repairable : null,
+            materials: x.materials || '', assessedMs: x.assessedAt ? x.assessedAt.toMillis() : 0,
+            crew: x.crew || '', crewMs: x.crewAt ? x.crewAt.toMillis() : 0,
           };
         }).sort((a, b) => b.createdMs - a.createdMs);
         win.webContents.send('complaints', list);
-        // ما فعله الموظف في تطبيقه يعود هنا فوراً: اطلاع، بدء معالجة، حل
-        list.forEach((c) => {
-          const p = prevState.get(c.id);
-          if (!firstSnap && p) {
-            const who = c.handledBy || 'الموظف';
-            if (p.status !== c.status && c.status === 'in_progress') notifyStaff('بدأت المعالجة', `${who} بدأ معالجة "${c.title}" (${c.department})`);
-            else if (p.status !== c.status && c.status === 'resolved') notifyStaff('تم حل شكوى', `${who} أنهى معالجة "${c.title}" (${c.department})`);
-            else if (!p.seenMs && c.seenMs) log(`${who} اطّلع على الشكوى "${c.title}" (${c.department})`);
-          }
-          prevState.set(c.id, { status: c.status, seenMs: c.seenMs });
-        });
-        firstSnap = false;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
       },
       (e) => log('خطأ في الاتصال: ' + e.message)
     );
+    unsubStaff = db.collection('staff').onSnapshot(
+      (snap) => {
+        win.webContents.send('staff', snap.docs.map((d) => {
+          const x = d.data();
+          const depts = Array.isArray(x.departments) && x.departments.length ? x.departments : (x.department ? [x.department] : []);
+          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x) };
+        }));
+      },
+      (e) => log('خطأ في قراءة الموظفين: ' + e.message)
+    );
     log('تم الاتصال بقاعدة البيانات');
-    warmOllama();
   } catch (e) {
     log('فشل الاتصال: ' + e.message);
   }
@@ -110,64 +115,23 @@ async function callClaude(d, prompt) {
   return (out.content || []).map((b) => b.text || '').join('');
 }
 
-// النماذج المحلية بطيئة مع الصور الكبيرة: نصغّر الصورة (الأطول ضلعاً 512 بكسل) قبل إرسالها
-const LOCAL_IMG = 512;
-function shrinkForLocal(b64) {
-  try {
-    const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'));
-    const { width, height } = img.getSize();
-    if (!width || Math.max(width, height) <= LOCAL_IMG) return b64;
-    const r = width >= height ? img.resize({ width: LOCAL_IMG }) : img.resize({ height: LOCAL_IMG });
-    return r.toJPEG(70).toString('base64');
-  } catch (e) { return b64; }
-}
-
-const OLLAMA_TIMEOUT_MS = 240000; // المهلة القصوى لطلب واحد (تشمل تحميل النموذج أول مرة)
-const OLLAMA_KEEP_ALIVE = '30m';  // يبقي النموذج في الذاكرة بين الطلبات بدل إعادة تحميله
-
 async function callOllama(d, prompt, withImage) {
   const model = store.get('ollamaModel');
   if (!model) throw new Error('اسم نموذج Ollama غير مضبوط');
   const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
   const msg = { role: 'user', content: prompt };
-  if (withImage && d.imageB64) msg.images = [shrinkForLocal(d.imageB64)];
-  let res;
-  try {
-    res = await fetch(base + '/api/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
-      body: JSON.stringify({
-        model, stream: false, format: 'json', keep_alive: OLLAMA_KEEP_ALIVE,
-        options: { temperature: 0, num_predict: 300 },
-        messages: [{ role: 'system', content: SYSTEM }, msg],
-      }),
-    });
-  } catch (e) {
-    if (e.name === 'TimeoutError') throw new Error('انتهت مهلة Ollama (' + OLLAMA_TIMEOUT_MS / 1000 + ' ثانية). النموذج ثقيل على هذا الجهاز');
-    throw e;
-  }
+  if (withImage && d.imageB64) msg.images = [d.imageB64];
+  const res = await fetch(base + '/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model, stream: false, format: 'json', options: { temperature: 0 },
+      messages: [{ role: 'system', content: SYSTEM }, msg],
+    }),
+  });
   if (!res.ok) throw new Error(`Ollama ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const out = await res.json();
   return (out.message && out.message.content) || '';
-}
-
-// تحميل النموذج في الذاكرة مسبقاً عند الاتصال، فلا ينتظر أول شكوى
-async function warmOllama() {
-  const p = store.get('provider');
-  const model = store.get('ollamaModel');
-  if ((p !== 'local' && p !== 'hybrid') || !model) return;
-  const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
-  try {
-    log('جارٍ تحميل نموذج Ollama في الذاكرة...');
-    const t0 = Date.now();
-    const res = await fetch(base + '/api/generate', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
-      body: JSON.stringify({ model, keep_alive: OLLAMA_KEEP_ALIVE }),
-    });
-    log(res.ok ? `النموذج جاهز (${Math.round((Date.now() - t0) / 1000)} ثانية)` : 'تعذّر تحميل النموذج مسبقاً: ' + res.status);
-  } catch (e) { log('تعذّر تحميل النموذج مسبقاً: ' + e.message); }
 }
 
 function parseResult(txt, depts) {
@@ -183,17 +147,9 @@ function parseResult(txt, depts) {
   };
 }
 
-// الشكاوى تُحلَّل واحدة بعد أخرى: الإرسال المتوازي يجعل Ollama يضع الطلبات في صف ويبدو كل تحليل أبطأ
-let queue = Promise.resolve();
-function analyze(id, force = false) {
+async function analyze(id, force = false) {
   if (busy.has(id) || (failed.has(id) && !force)) return;
-  busy.add(id); // يبقى «مشغولاً» من دخول الطابور حتى الانتهاء
-  const job = queue.then(() => analyzeNow(id, force));
-  queue = job.catch(() => {});
-  return job;
-}
-
-async function analyzeNow(id, force) {
+  busy.add(id);
   try {
     const ref = db.collection('complaints').doc(id);
     const d = (await ref.get()).data();
@@ -251,6 +207,42 @@ ipcMain.handle('key:pick', async () => {
   store.set('serviceAccountPath', r.filePaths[0]);
   return r.filePaths[0];
 });
+ipcMain.handle('image:pick', async () => {
+  const r = await dialog.showOpenDialog(win, { filters: [{ name: 'صور', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }], properties: ['openFile'] });
+  if (r.canceled) return '';
+  let img = nativeImage.createFromPath(r.filePaths[0]);
+  if (img.isEmpty()) { log('تعذّر قراءة الصورة'); return ''; }
+  const { width, height } = img.getSize();
+  const k = Math.min(1, 900 / Math.max(width, height));
+  if (k < 1) img = img.resize({ width: Math.round(width * k), height: Math.round(height * k) });
+  let q = 70;
+  let buf = img.toJPEG(q);
+  while (buf.length > 600000 && q > 30) { q -= 15; buf = img.toJPEG(q); }
+  return buf.toString('base64');
+});
+// إضافة شكوى يدوياً (مكالمة هاتفية أو مراجعة شخصية)
+ipcMain.handle('complaint:add', async (_, d) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات: اختر مفتاح Firebase واحفظ الإعدادات أولاً' };
+    const title = String(d.title || '').trim();
+    const text = String(d.text || '').trim();
+    if (!title || !text) return { ok: false, error: 'اكتب عنوان الشكوى وتفاصيلها' };
+    const routed = !!d.department;
+    const doc = {
+      title, text, name: String(d.name || '').trim(), phone: String(d.phone || '').trim(),
+      imageB64: d.imageB64 || '', userId: 'manual', source: 'manual',
+      status: routed ? 'routed' : 'new', department: routed ? String(d.department) : '',
+      priority: routed ? (['low', 'medium', 'high', 'urgent'].includes(d.priority) ? d.priority : 'medium') : '',
+      aiSummary: '', reply: '', createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (routed) doc.routedAt = admin.firestore.FieldValue.serverTimestamp();
+    await db.collection('complaints').add(doc);
+    log('تمت إضافة الشكوى يدوياً' + (routed ? ' إلى ' + doc.department : ' وستُحلَّل وتُوجَّه'));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 ipcMain.handle('connect', () => connect());
 ipcMain.handle('ollama:test', async () => {
   const base = (store.get('ollamaUrl') || 'http://localhost:11434').replace(/\/+$/, '');
@@ -263,9 +255,6 @@ ipcMain.handle('ollama:test', async () => {
     log('تعذّر الاتصال بـ Ollama: ' + e.message + ' — تأكد أنه مثبت ويعمل');
   }
 });
-ipcMain.handle('map:open', (_, lat, lng) => {
-  if (typeof lat === 'number' && typeof lng === 'number') shell.openExternal(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
-});
 ipcMain.handle('analyze', (_, id) => analyze(id, true));
 
 app.whenReady().then(() => {
@@ -275,6 +264,6 @@ app.whenReady().then(() => {
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.webContents.once('did-finish-load', () => { win.setTitle('مركز الشكاوى — الإصدار ' + app.getVersion()); connect(); });
+  win.webContents.once('did-finish-load', () => connect());
 });
 app.on('window-all-closed', () => app.quit());
