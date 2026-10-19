@@ -50,7 +50,7 @@ data class Complaint(
     val createdMs: Long, val imageB64: String, val name: String, val phone: String,
     val branch: String, val repairable: Boolean?, val materials: String, val crew: String,
     val lat: Double?, val lng: Double?, val afterB64: String, val dupTitle: String,
-    val dupCount: Long, val rating: Long
+    val dupCount: Long, val rating: Long, val arrivedMs: Long
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -63,7 +63,8 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("branch") ?: "", d.getBoolean("repairable"), d.getString("materials") ?: "",
     d.getString("crew") ?: "",
     d.getDouble("lat"), d.getDouble("lng"), d.getString("afterImageB64") ?: "",
-    d.getString("dupTitle") ?: "", d.getLong("dupCount") ?: 0L, d.getLong("rating") ?: 0L
+    d.getString("dupTitle") ?: "", d.getLong("dupCount") ?: 0L, d.getLong("rating") ?: 0L,
+    d.getTimestamp("arrivedAt")?.toDate()?.time ?: 0L
 )
 
 fun priorityAr(p: String): String = when (p) {
@@ -75,8 +76,11 @@ fun priorityAr(p: String): String = when (p) {
 }
 
 /** سجل الشكوى: من فعل ماذا ومتى (مجموعة فرعية log داخل الشكوى) */
+/** الاسم المخصص للحساب (الحقل name في مستند staff) ويظهر في سجل الشكاوى بدل البريد */
+var myDisplayName: String = ""
+
 fun logEvent(id: String, action: String) {
-    val by = FirebaseAuth.getInstance().currentUser?.email ?: "موظف"
+    val by = myDisplayName.ifBlank { FirebaseAuth.getInstance().currentUser?.email ?: "موظف" }
     FirebaseFirestore.getInstance().collection("complaints").document(id).collection("log")
         .add(mapOf("by" to by, "action" to action, "at" to FieldValue.serverTimestamp()))
 }
@@ -96,8 +100,24 @@ fun setStatus(id: String, status: String, reply: String) {
 /** اسم موضوع الإشعارات للقسم (ترميز سداسي لأن الأسماء العربية غير مسموحة في أسماء المواضيع) */
 fun deptTopic(d: String) = "d" + d.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
 
-fun signOutStaff(depts: List<String>) {
-    try { depts.forEach { FirebaseMessaging.getInstance().unsubscribeFromTopic(deptTopic(it)) } } catch (e: Exception) { }
+/** موضوع إشعارات كادر بعينه (قسم|كادر) */
+fun crewTopic(dept: String, crew: String) = "k" + (dept + "|" + crew).toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
+
+/** وصول الكادر إلى الموقع: تبدأ المعالجة تلقائياً ويصل المواطن إشعار */
+fun markArrived(id: String, status: String, crew: String) {
+    val ts = FieldValue.serverTimestamp()
+    val m = mutableMapOf<String, Any>("arrivedAt" to ts, "updatedAt" to ts)
+    if (status == "routed") { m["status"] = "in_progress"; m["startedAt"] = ts }
+    FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
+    logEvent(id, "وصل الكادر $crew إلى الموقع")
+}
+
+fun signOutStaff(depts: List<String>, crew: String = "") {
+    myDisplayName = ""
+    try {
+        depts.forEach { FirebaseMessaging.getInstance().unsubscribeFromTopic(deptTopic(it)) }
+        if (crew.isNotBlank() && depts.isNotEmpty()) FirebaseMessaging.getInstance().unsubscribeFromTopic(crewTopic(depts.first(), crew))
+    } catch (e: Exception) { }
     FirebaseAuth.getInstance().signOut()
 }
 
@@ -266,6 +286,7 @@ fun Home(uid: String, email: String) {
     var depts by remember { mutableStateOf<List<String>?>(null) }
     var branches by remember { mutableStateOf<List<String>>(emptyList()) }
     var crews by remember { mutableStateOf<List<String>>(emptyList()) }
+    var crewName by remember { mutableStateOf("") }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(uid) {
         try {
@@ -275,8 +296,23 @@ fun Home(uid: String, email: String) {
             branches = readBranches(doc)
             crews = readCrews(doc)
             depts = if (!arr.isNullOrEmpty()) arr else doc.getString("department")?.takeIf { it.isNotBlank() }?.let { listOf(it) }
-            // إشعار فوري عند توجيه شكوى جديدة إلى أقسامه
-            depts?.forEach { try { FirebaseMessaging.getInstance().subscribeToTopic(deptTopic(it)) } catch (e: Exception) { } }
+            // كوادر الأقسام المضافة من برنامج الحاسوب (المجموعة deptCrews)
+            depts?.forEach { dn ->
+                try {
+                    val dc = FirebaseFirestore.getInstance().collection("deptCrews").document(deptTopic(dn)).get().await()
+                    val extra = (dc.get("crews") as? List<*>)?.mapNotNull { (it as? String)?.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+                    crews = (crews + extra).distinct()
+                } catch (e: Exception) { }
+            }
+            // حساب كادر ميداني: يرى شكاواه المُسندة فقط
+            myDisplayName = (doc.getString("name") ?: "").trim()
+            if (doc.getString("role") == "crew") crewName = (doc.getString("crew") ?: "").trim()
+            if (crewName.isNotBlank()) {
+                depts?.firstOrNull()?.let { try { FirebaseMessaging.getInstance().subscribeToTopic(crewTopic(it, crewName)) } catch (e: Exception) { } }
+            } else {
+                // إشعار فوري عند توجيه شكوى جديدة إلى أقسامه
+                depts?.forEach { try { FirebaseMessaging.getInstance().subscribeToTopic(deptTopic(it)) } catch (e: Exception) { } }
+            }
         } catch (e: Exception) { }
         loaded = true
     }
@@ -287,23 +323,24 @@ fun Home(uid: String, email: String) {
             Text("هذا الحساب غير مرتبط بأي قسم. تواصل مع الإدارة.")
             Button(onClick = { FirebaseAuth.getInstance().signOut() }) { Text("تسجيل الخروج") }
         }
-        else -> Main(d, branches, crews, email)
+        else -> Main(d, branches, crews, crewName, email)
     }
 }
 
 @Composable
-fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email: String) {
+fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewName: String, email: String) {
     var list by remember { mutableStateOf(listOf<Complaint>()) }
     var tab by remember { mutableIntStateOf(0) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = list.firstOrNull { it.id == selectedId }
 
-    DisposableEffect(depts) {
-        // مستمع لكل قسم ثم دمج النتائج
+    DisposableEffect(depts, crewName) {
+        // مستمع لكل قسم (وللكادر: شكاواه المُسندة فقط) ثم دمج النتائج
         val parts = mutableMapOf<String, List<Complaint>>()
         val regs = depts.map { d ->
             FirebaseFirestore.getInstance().collection("complaints")
                 .whereEqualTo("department", d)
+                .let { q -> if (crewName.isNotBlank()) q.whereEqualTo("crew", crewName) else q }
                 .addSnapshotListener { s, _ ->
                     if (s != null) {
                         parts[d] = s.documents.map { toComplaint(it) }
@@ -358,14 +395,16 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email
             } else {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("حسابي", style = MaterialTheme.typography.headlineSmall)
+                    if (myDisplayName.isNotBlank()) Text("الاسم: $myDisplayName")
                     Text("البريد: $email")
                     val ctx = androidx.compose.ui.platform.LocalContext.current
                     val ver = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" } }
                     Text("الإصدار: $ver")
+                    if (crewName.isNotBlank()) Text("🚧 حساب كادر: $crewName")
                     Text("الأقسام: " + depts.joinToString("، "))
                     if (branches.isNotEmpty()) Text("الفروع: " + branches.joinToString("، "))
                     if (crews.isNotEmpty()) Text("الكوادر: " + crews.joinToString("، "))
-                    Button(onClick = { signOutStaff(depts) }) { Text("تسجيل الخروج") }
+                    Button(onClick = { signOutStaff(depts, crewName) }) { Text("تسجيل الخروج") }
                 }
             }
         }
@@ -373,12 +412,12 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, email
 
     selected?.let { c ->
         val busyCrews = list.filter { it.crew.isNotBlank() && it.status != "resolved" }.groupingBy { it.crew }.eachCount()
-        Detail(c, branches, crews, busyCrews) { selectedId = null }
+        Detail(c, branches, crews, busyCrews, crewName.isNotBlank()) { selectedId = null }
     }
 }
 
 @Composable
-fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews: Map<String, Int>, onClose: () -> Unit) {
+fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews: Map<String, Int>, crewMode: Boolean, onClose: () -> Unit) {
     var crew by rememberSaveable(c.id) { mutableStateOf(c.crew) }
     var err by remember { mutableStateOf("") }
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -444,8 +483,12 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         Image(bitmap = doneImg, contentDescription = null, modifier = Modifier.fillMaxWidth())
                     }
                 } else {
+                    if (crewMode) {
+                        if (c.arrivedMs > 0) Text("📍 وصلتَ إلى الموقع: " + SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(c.arrivedMs)))
+                        else Button(onClick = { markArrived(c.id, c.status, c.crew); onClose() }) { Text("📍 وصلت إلى الموقع") }
+                    }
                     OutlinedTextField(reply, { reply = it }, label = { Text("رد على المواطن / ملخص العمل المنجز") }, modifier = Modifier.fillMaxWidth())
-                    if (crews.isNotEmpty()) {
+                    if (crews.isNotEmpty() && !crewMode) {
                         Text("كادر الصيانة الميداني", style = MaterialTheme.typography.titleSmall)
                         crews.forEach { k ->
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { crew = k }) {
@@ -526,7 +569,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         else -> { sendReport(c.id, branch, r, materials.trim()); onClose() }
                     }
                 }) { Text("إرسال التقرير للمدير") }
-                if (c.status == "routed") Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
+                if (c.status == "routed" && !crewMode) Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
             }
         },
         dismissButton = { if (!done) TextButton(onClick = onClose) { Text("إغلاق") } }

@@ -28,6 +28,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -189,6 +190,15 @@ fun NewTab(onSent: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var img by remember { mutableStateOf<Uri?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // أنواع الشكاوى (الأقسام) من برنامج الحاسوب، لتوجيه أدق وأسرع
+    var cats by remember { mutableStateOf<List<String>>(emptyList()) }
+    var category by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        try {
+            val dc = FirebaseFirestore.getInstance().collection("config").document("departments").get().await()
+            cats = (dc.get("list") as? List<*>)?.mapNotNull { (it as? String)?.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        } catch (e: Exception) { }
+    }
     var loc by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var locBusy by remember { mutableStateOf(false) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { img = it }
@@ -214,6 +224,15 @@ fun NewTab(onSent: () -> Unit) {
             text, { text = it }, label = { Text("تفاصيل الشكوى") },
             modifier = Modifier.fillMaxWidth().height(160.dp)
         )
+        if (cats.isNotEmpty()) {
+            Text("نوع الشكوى (اختياري)", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                cats.forEach { k ->
+                    if (category == k) Button(onClick = { category = "" }) { Text("✓ $k") }
+                    else OutlinedButton(onClick = { category = k }) { Text(k) }
+                }
+            }
+        }
         OutlinedButton(onClick = { pick.launch("image/*") }) {
             Text(if (img == null) "إرفاق صورة" else "تم اختيار صورة ✓ (تغيير)")
         }
@@ -247,6 +266,7 @@ fun NewTab(onSent: () -> Unit) {
                             "createdAt" to FieldValue.serverTimestamp()
                         )
                         loc?.let { data["lat"] = it.first; data["lng"] = it.second }
+                        if (category.isNotBlank()) data["category"] = category
                         // رمز الإشعارات ليصل المواطن تنبيه عند تغيّر حالة شكواه
                         try {
                             withTimeoutOrNull(4000) { FirebaseMessaging.getInstance().token.await() }
@@ -260,7 +280,7 @@ fun NewTab(onSent: () -> Unit) {
                             if (sent != null) "تم إرسال الشكوى" else "سيتم الإرسال عند توفر الإنترنت",
                             Toast.LENGTH_LONG
                         ).show()
-                        title = ""; text = ""; img = null; loc = null
+                        title = ""; text = ""; img = null; loc = null; category = ""
                         onSent()
                     } catch (e: Exception) {
                         Toast.makeText(ctx, e.message ?: "حدث خطأ", Toast.LENGTH_LONG).show()

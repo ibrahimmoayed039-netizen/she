@@ -46,3 +46,10 @@ details.grp>.card{box-shadow:none;border:1px solid #e5e7eb;margin:8px 0}
 .card img{cursor:zoom-in}
 .lb{position:fixed;top:0;right:0;bottom:0;left:0;background:#000c;display:flex;align-items:center;justify-content:center;z-index:99;cursor:zoom-out}
 .lb img{max-width:94%;max-height:94%;border-radius:6px}
+
+.pager button.cur{background:#1565c0;color:#fff}
+.pager button:disabled{opacity:.4;cursor:default}
+.pager{align-items:center}
+
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{background:#e3f2fd}

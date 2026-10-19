@@ -19,7 +19,7 @@ const store = new Store({
   },
 });
 
-let win, db, unsub = null, unsubStaff = null;
+let win, db, unsub = null, unsubStaff = null, unsubDC = null;
 const busy = new Set();
 const failed = new Set();
 
@@ -49,11 +49,14 @@ function toCrews(x) {
 // اسم موضوع القسم: ترميز سداسي لأن العربية غير مسموحة في أسماء المواضيع (نفس دالة تطبيق الموظف)
 const deptTopic = (d) => 'd' + Buffer.from(String(d), 'utf8').toString('hex');
 
-async function notifyTopic(dept, title, body) {
+const crewTopic = (dept, crew) => 'k' + Buffer.from(dept + '|' + crew, 'utf8').toString('hex');
+async function sendTopic(topic, title, body, what) {
   try {
-    await admin.messaging().send({ topic: deptTopic(dept), notification: { title, body }, android: { priority: 'high' } });
-  } catch (e) { log('تعذّر إرسال إشعار للقسم: ' + e.message); }
+    await admin.messaging().send({ topic, notification: { title, body }, android: { priority: 'high' } });
+  } catch (e) { log('تعذّر إرسال إشعار ' + what + ': ' + e.message); }
 }
+const notifyTopic = (dept, title, body) => sendTopic(deptTopic(dept), title, body, 'للقسم');
+const notifyCrew = (dept, crew, title, body) => sendTopic(crewTopic(dept, crew), title, body, 'للكادر');
 async function notifyToken(token, title, body) {
   if (!token) return;
   try {
@@ -127,6 +130,7 @@ async function connect() {
   try {
     if (unsub) { unsub(); unsub = null; }
     if (unsubStaff) { unsubStaff(); unsubStaff = null; }
+    if (unsubDC) { unsubDC(); unsubDC = null; }
     seeded = false; lastState.clear();
     if (!admin.apps.length) {
       admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync(s.serviceAccountPath, 'utf8'))) });
@@ -146,6 +150,8 @@ async function connect() {
             crew: x.crew || '', crewMs: x.crewAt ? x.crewAt.toMillis() : 0,
             routedMs: x.routedAt ? x.routedAt.toMillis() : 0, startedMs: x.startedAt ? x.startedAt.toMillis() : 0,
             resolvedMs: x.resolvedAt ? x.resolvedAt.toMillis() : (x.status === 'resolved' && x.updatedAt ? x.updatedAt.toMillis() : 0),
+            category: x.category || '', aiDepartment: x.aiDepartment || '',
+            arrivedMs: x.arrivedAt ? x.arrivedAt.toMillis() : 0,
             lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
             afterImageB64: x.afterImageB64 || '', rating: typeof x.rating === 'number' ? x.rating : 0,
             dupTitle: x.dupTitle || '', dupCount: x.dupCount || 0,
@@ -156,11 +162,17 @@ async function connect() {
         snap.docs.forEach((doc) => {
           const x = doc.data(), prev = lastState.get(doc.id);
           if (seeded && prev && x.status === 'resolved' && prev.status !== 'resolved') log(`✅ أُنجز العمل: "${x.title || ''}"` + (x.crew ? ' (الكادر: ' + x.crew + ')' : ''));
-          if (seeded && prev && x.fcmToken) {
-            if (x.status !== prev.status && PUSH_TEXT[x.status]) { const [t, b] = PUSH_TEXT[x.status](x); notifyToken(x.fcmToken, t, b); }
-            else if (x.crew && x.crew !== prev.crew) notifyToken(x.fcmToken, 'تم إسناد شكواك', 'أُسندت شكواك إلى كادر الصيانة: ' + x.crew);
+          if (seeded && prev) {
+            // تكليف كادر بشكوى: إشعار لحساب الكادر
+            if (x.crew && x.crew !== prev.crew && x.department) notifyCrew(x.department, x.crew, 'كُلِّفتم بشكوى جديدة', x.title || '');
+            if (x.fcmToken) {
+              const arrivedNow = x.arrivedAt && !prev.arrived;
+              if (arrivedNow) notifyToken(x.fcmToken, 'وصل كادر الصيانة', 'وصل كادر الصيانة إلى موقع شكواك' + (x.crew ? ' (' + x.crew + ')' : ''));
+              else if (x.status !== prev.status && PUSH_TEXT[x.status]) { const [t, b] = PUSH_TEXT[x.status](x); notifyToken(x.fcmToken, t, b); }
+              else if (x.crew && x.crew !== prev.crew) notifyToken(x.fcmToken, 'تم إسناد شكواك', 'أُسندت شكواك إلى كادر الصيانة: ' + x.crew);
+            }
           }
-          lastState.set(doc.id, { status: x.status, crew: x.crew || '' });
+          lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt });
         });
         seeded = true;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
@@ -172,11 +184,16 @@ async function connect() {
         win.webContents.send('staff', snap.docs.map((d) => {
           const x = d.data();
           const depts = Array.isArray(x.departments) && x.departments.length ? x.departments : (x.department ? [x.department] : []);
-          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x) };
+          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x), role: x.role || '', crew: x.crew || '', email: x.email || '', name: x.name || '', disabled: x.disabled === true };
         }));
       },
       (e) => log('خطأ في قراءة الموظفين: ' + e.message)
     );
+    unsubDC = db.collection('deptCrews').onSnapshot(
+      (snap) => win.webContents.send('deptCrews', snap.docs.map((d) => ({ dept: d.data().department || '', crews: Array.isArray(d.data().crews) ? d.data().crews : [] }))),
+      (e) => log('خطأ في قراءة كوادر الأقسام: ' + e.message)
+    );
+    syncConfig();
     log('تم الاتصال بقاعدة البيانات');
   } catch (e) {
     log('فشل الاتصال: ' + e.message);
@@ -240,6 +257,13 @@ function parseResult(txt, depts) {
   };
 }
 
+// نشر قائمة الأقسام ليختار منها المواطن نوع الشكوى عند الإرسال
+function syncConfig() {
+  if (!db) return;
+  db.collection('config').doc('departments').set({ list: store.get('departments') || [] })
+    .catch((e) => log('تعذّر نشر قائمة الأقسام: ' + e.message));
+}
+
 async function analyze(id, force = false) {
   if (busy.has(id) || (failed.has(id) && !force)) return;
   busy.add(id);
@@ -255,7 +279,11 @@ async function analyze(id, force = false) {
     const hasImage = !!d.imageB64;
     const localImg = store.get('localImages');
 
+    // نوع الشكوى الذي اختاره المواطن عند الإرسال (يُعتمد قسماً ما لم يكن «أخرى»)
+    const cat = (typeof d.category === 'string' && depts.includes(d.category) && d.category !== other) ? d.category : '';
+    let aiDept = '';
     let r = null, used = '';
+    try {
     if (provider === 'local' || provider === 'hybrid') {
       // في الوضع الهجين: إن كانت الشكوى بصورة والنموذج المحلي لا يدعم الصور، تذهب مباشرة إلى Claude
       const skipLocal = provider === 'hybrid' && hasImage && !localImg;
@@ -275,14 +303,21 @@ async function analyze(id, force = false) {
       r = parseResult(await callClaude(d, prompt), depts);
       used = 'Claude';
     }
+    } catch (e) {
+      if (!cat) throw e;
+      log('تعذّر التحليل (' + e.message + ')، سيُوجَّه حسب اختيار المواطن');
+    }
+    if (!r && cat) { r = { department: cat, priority: 'medium', summary: String(d.text || '').slice(0, 140) }; used = 'اختيار المواطن'; }
     if (!r) throw new Error('لم يتم الحصول على نتيجة');
+    if (cat && r.department !== cat) { aiDept = r.department; r.department = cat; used += ' + اختيار المواطن'; }
 
     await ref.update({
       department: r.department, priority: r.priority, aiSummary: r.summary, status: 'routed',
+      ...(aiDept ? { aiDepartment: aiDept } : {}),
       routedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     failed.delete(id);
-    addLog(id, 'النظام', `تم التوجيه إلى ${r.department} بأولوية ${r.priority} (${used})`);
+    addLog(id, 'النظام', `تم التوجيه إلى ${r.department} بأولوية ${r.priority} (${used})` + (cat ? ` — اختار المواطن النوع «${cat}»` + (aiDept ? ` (اقترح التحليل «${aiDept}» فاعتُمد اختيار المواطن)` : '') : ''));
     notifyTopic(r.department, 'شكوى جديدة: ' + (d.title || ''), r.summary || d.text || '');
     checkDuplicate(id, d, r.department);
     log(`تم توجيه "${d.title}" إلى ${r.department} (${used})`);
@@ -296,7 +331,7 @@ async function analyze(id, force = false) {
 
 ipcMain.handle('settings:get', () => store.store);
 // مسار مفتاح Firebase يُحفظ فقط عبر key:pick حتى لا تمسحه نسخة قديمة من الإعدادات
-ipcMain.handle('settings:set', (_, s) => { const { serviceAccountPath, ...rest } = s; store.set(rest); });
+ipcMain.handle('settings:set', (_, s) => { const { serviceAccountPath, ...rest } = s; store.set(rest); syncConfig(); });
 ipcMain.handle('key:pick', async () => {
   const r = await dialog.showOpenDialog(win, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
   if (r.canceled) return store.get('serviceAccountPath');
@@ -345,6 +380,128 @@ ipcMain.handle('complaint:add', async (_, d) => {
   }
 });
 ipcMain.handle('connect', () => connect());
+// إنشاء حساب كادر ميداني (مستخدم Auth + مستند staff بدور crew)
+// تعديل قائمة كوادر قسم: تُكتب في حقل crews لكل موظف قسم (غير حسابات الكوادر) فتظهر في تطبيقه مباشرة
+async function deptStaffDocs(dept) {
+  const a = await db.collection('staff').where('department', '==', dept).get();
+  const b = await db.collection('staff').where('departments', 'array-contains', dept).get();
+  const m = new Map();
+  [...a.docs, ...b.docs].forEach((d) => { if ((d.data().role || '') !== 'crew') m.set(d.id, d); });
+  return [...m.values()];
+}
+ipcMain.handle('crews:edit', async (_, dept, add, remove) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    dept = String(dept || '').trim();
+    const clean = (arr) => [...new Set((arr || []).map((v) => String(v).trim()).filter(Boolean))];
+    add = clean(add); remove = clean(remove);
+    if (!dept) return { ok: false, error: 'اختر القسم' };
+    // القائمة الأساسية: وثيقة deptCrews للقسم (لا تحتاج أي حساب موظف ولا Firebase)
+    const ref = db.collection('deptCrews').doc(deptTopic(dept));
+    const snap = await ref.get();
+    const cur = snap.exists && Array.isArray(snap.data().crews) ? snap.data().crews : [];
+    await ref.set({ department: dept, crews: [...new Set([...cur.filter((k) => !remove.includes(k)), ...add])] });
+    // الحذف يشمل أيضاً الأسماء القديمة المكتوبة يدوياً في مستندات الموظفين
+    if (remove.length) {
+      for (const d of await deptStaffDocs(dept)) {
+        const x = d.data(), upd = {};
+        const list2 = toCrews(x);
+        if (list2.some((k) => remove.includes(k))) upd.crews = list2.filter((k) => !remove.includes(k)).join('، ');
+        if (x.crew && remove.includes(String(x.crew).trim())) upd.crew = admin.firestore.FieldValue.delete();
+        if (Object.keys(upd).length) await d.ref.update(upd);
+      }
+    }
+    log(`تم تحديث كوادر قسم ${dept}` + (add.length ? ' (إضافة: ' + add.join('، ') + ')' : '') + (remove.length ? ' (حذف: ' + remove.join('، ') + ')' : ''));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// إنشاء حساب موظف قسم من البرنامج (بدل Firebase Console)
+ipcMain.handle('staff:createDept', async (_, p) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    const dept = String(p.department || '').trim(), email = String(p.email || '').trim().toLowerCase();
+    const pw = String(p.password || ''), name = String(p.name || '').trim();
+    if (!dept || !email.includes('@')) return { ok: false, error: 'أكمل القسم وبريداً صحيحاً' };
+    if (pw.length < 6) return { ok: false, error: 'كلمة المرور 6 أحرف على الأقل' };
+    const u = await admin.auth().createUser({ email, password: pw });
+    await db.collection('staff').doc(u.uid).set({ department: dept, email, name });
+    log(`تم إنشاء حساب موظف لقسم ${dept}`);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'auth/email-already-exists' ? 'هذا البريد مستخدم من قبل' : e.code === 'auth/invalid-email' ? 'البريد غير صحيح' : e.message };
+  }
+});
+
+// إدارة الحسابات من البرنامج: كلمة مرور جديدة، تعطيل/تفعيل، حذف
+ipcMain.handle('staff:setPassword', async (_, id, pw) => {
+  try {
+    if (String(pw || '').length < 6) return { ok: false, error: 'كلمة المرور 6 أحرف على الأقل' };
+    await admin.auth().updateUser(String(id), { password: String(pw) });
+    await admin.auth().revokeRefreshTokens(String(id));
+    log('تم تغيير كلمة مرور حساب');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('staff:setDisabled', async (_, id, flag) => {
+  try {
+    id = String(id);
+    await db.collection('staff').doc(id).update({ disabled: !!flag }); // القاعدة تمنع وصوله فوراً
+    await admin.auth().updateUser(id, { disabled: !!flag });
+    if (flag) await admin.auth().revokeRefreshTokens(id);
+    log(flag ? 'تم تعطيل حساب' : 'تم تفعيل حساب');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('staff:delete', async (_, id) => {
+  try {
+    id = String(id);
+    await db.collection('staff').doc(id).delete();
+    try { await admin.auth().deleteUser(id); } catch (e) { if (e.code !== 'auth/user-not-found') throw e; }
+    log('تم حذف حساب');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// تخصيص اسم لحساب (موظف أو كادر) يظهر في السجل والتقارير
+ipcMain.handle('staff:setName', async (_, id, name) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    await db.collection('staff').doc(String(id)).update({ name: String(name || '').trim() });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+async function createCrewAccount(dept, crew, email, pw, name) {
+  try {
+    const ex = await db.collection('staff').where('role', '==', 'crew').where('department', '==', dept).where('crew', '==', crew).get();
+    if (!ex.empty) return { crew, email, ok: false, error: 'يوجد حساب لهذا الكادر في هذا القسم' };
+    const u = await admin.auth().createUser({ email, password: pw });
+    await db.collection('staff').doc(u.uid).set({ role: 'crew', department: dept, crew, email, name: name || '' });
+    log(`تم إنشاء حساب الكادر "${crew}" (${dept})`);
+    return { crew, email, ok: true };
+  } catch (e) {
+    const m = e.code === 'auth/email-already-exists' ? 'هذا البريد مستخدم من قبل'
+      : e.code === 'auth/invalid-email' ? 'البريد غير صحيح' : e.message;
+    return { crew, email, ok: false, error: m };
+  }
+}
+// إنشاء حساب كادر أو عدة كوادر دفعة واحدة: العدد n>1 يرقّم الاسم والبريد (كادر 1، كادر 2 / crew1@، crew2@)
+ipcMain.handle('crew:create', async (_, p) => {
+  if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات', results: [] };
+  const dept = String(p.department || '').trim(), crew = String(p.crew || '').trim();
+  const email = String(p.email || '').trim().toLowerCase(), pw = String(p.password || '');
+  const n = Math.max(1, Math.min(30, parseInt(p.count, 10) || 1));
+  if (!dept || !crew || !email.includes('@')) return { ok: false, error: 'أكمل القسم واسم الكادر وبريداً صحيحاً', results: [] };
+  if (pw.length < 6) return { ok: false, error: 'كلمة المرور 6 أحرف على الأقل', results: [] };
+  const [local, domain] = email.split('@');
+  const results = [];
+  for (let i = 1; i <= n; i++) {
+    results.push(await createCrewAccount(dept, n > 1 ? `${crew} ${i}` : crew, n > 1 ? `${local}${i}@${domain}` : email, pw, n > 1 ? '' : String(p.name || '').trim()));
+  }
+  const bad = results.filter((r) => !r.ok);
+  return { ok: bad.length === 0, error: bad.length ? `فشل ${bad.length} من ${n}` : '', results };
+});
 const PRI_AR = { urgent: 'عاجلة', high: 'عالية', medium: 'متوسطة', low: 'منخفضة' };
 // تغيير أولوية شكوى بعينها يدوياً (حادث طارئ مثلاً)
 ipcMain.handle('priority:set', async (_, id, p) => {

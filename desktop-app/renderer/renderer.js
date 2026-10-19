@@ -29,7 +29,8 @@ function timeline(c) {
   const rows = [
     ['📥 وصول الشكوى', c.createdMs],
     ['➡️ التوجيه إلى القسم', c.routedMs],
-    ['🚧 استلام الكادر' + (c.crew ? ' (' + c.crew + ')' : ''), c.crewMs],
+    ['🚧 استلام الكادر' + (c.crew ? ' (' + crewLabel(c) + ')' : ''), c.crewMs],
+    ['📍 وصول الكادر إلى الموقع', c.arrivedMs],
     ['🔧 بدء المعالجة', c.startedMs],
     ['✅ وقت الإنجاز', c.resolvedMs],
   ].filter((r) => r[1]);
@@ -76,10 +77,11 @@ function card(c) {
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     h('p', {}, c.text),
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + c.name + ' ' + c.phone) : '',
+    c.category ? h('p', { class: 'small' }, '🗂 النوع الذي اختاره المواطن: ' + c.category + (c.aiDepartment ? ' (اقترح التحليل: ' + c.aiDepartment + ')' : '')) : '',
     c.dupTitle ? h('p', { class: 'rep no' }, '🔁 مكررة: تشبه شكوى سابقة («' + c.dupTitle + '»)') : '',
     c.dupCount ? h('p', { class: 'small' }, '🔁 تكررت هذه الشكوى ' + c.dupCount + ' مرة') : '',
     c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 فتح الموقع على الخريطة') : '',
-    c.crew ? h('p', { class: 'rep yes' }, '🚧 الكادر المسؤول: ' + c.crew) : '',
+    c.crew ? h('p', { class: 'rep yes' }, '🚧 الكادر المسؤول: ' + crewLabel(c)) : '',
     c.afterImageB64 ? h('div', {}, h('b', {}, 'صورة بعد الصيانة:'), h('img', { src: 'data:image/jpeg;base64,' + c.afterImageB64 })) : '',
     c.rating ? h('p', {}, 'تقييم المواطن: ' + '⭐'.repeat(c.rating)) : '',
     timeline(c),
@@ -206,6 +208,55 @@ function renderCrews() {
   });
 }
 
+// ---------------- الفرز والتقسيم إلى صفحات ----------------
+const pager = { size: 20, page: {}, sig: {} };
+const PAGE_SIZES = [10, 20, 50, 100];
+function pagerBar(key, total, pages, p, start, shown) {
+  const go = (n) => { pager.page[key] = n; render(); document.getElementById('view').scrollTop = 0; window.scrollTo(0, 0); };
+  const nums = [];
+  for (let i = Math.max(1, p - 3); i <= Math.min(pages, p + 3); i++) nums.push(i);
+  return h('div', { class: 'card bar pager' },
+    h('span', { class: 'small' }, total ? 'عرض ' + (start + 1) + ' – ' + (start + shown) + ' من ' + total : 'لا توجد نتائج'),
+    pages > 1 ? h('button', { class: 'act', disabled: p <= 1, onclick: () => go(1) }, '«') : '',
+    pages > 1 ? h('button', { class: 'act', disabled: p <= 1, onclick: () => go(p - 1) }, 'السابق') : '',
+    ...(pages > 1 ? nums.map((n) => h('button', { class: n === p ? 'act cur' : 'act', onclick: () => go(n) }, String(n))) : []),
+    pages > 1 ? h('button', { class: 'act', disabled: p >= pages, onclick: () => go(p + 1) }, 'التالي') : '',
+    pages > 1 ? h('button', { class: 'act', disabled: p >= pages, onclick: () => go(pages) }, '»') : '',
+    h('span', { class: 'small' }, 'الصفحة ' + p + ' من ' + pages),
+    h('label', {}, 'في الصفحة: ', sel(PAGE_SIZES.map((n) => [String(n), String(n)]), String(pager.size), (v) => { pager.size = parseInt(v, 10); pager.page = {}; render(); })));
+}
+// sig: توقيع الفلاتر والفرز؛ إذا تغيّر نعود للصفحة الأولى
+function paginate(key, items, sig) {
+  if (pager.sig[key] !== sig) { pager.sig[key] = sig; pager.page[key] = 1; }
+  const total = items.length, pages = Math.max(1, Math.ceil(total / pager.size));
+  const p = Math.min(Math.max(1, pager.page[key] || 1), pages);
+  pager.page[key] = p;
+  const start = (p - 1) * pager.size;
+  const slice = items.slice(start, start + pager.size);
+  return { slice, bar: () => pagerBar(key, total, pages, p, start, slice.length) };
+}
+const MAIN_SORTS = {
+  smart: ['الأهم أولاً (الأولوية ثم الأحدث)', (a, b) => rankOf(a) - rankOf(b) || b.createdMs - a.createdMs],
+  newest: ['الأحدث أولاً', (a, b) => b.createdMs - a.createdMs],
+  oldest: ['الأقدم أولاً', (a, b) => a.createdMs - b.createdMs],
+  priority: ['حسب الأولوية', (a, b) => (PRI_RANK[a.priority] ?? 4) - (PRI_RANK[b.priority] ?? 4) || b.createdMs - a.createdMs],
+  dept: ['حسب القسم', (a, b) => String(a.department).localeCompare(String(b.department), 'ar') || b.createdMs - a.createdMs],
+  status: ['حسب الحالة', (a, b) => ORD(['routed', 'in_progress', 'resolved'], a.status) - ORD(['routed', 'in_progress', 'resolved'], b.status) || b.createdMs - a.createdMs],
+  crew: ['حسب الكادر', (a, b) => String(a.crew || '~').localeCompare(String(b.crew || '~'), 'ar') || b.createdMs - a.createdMs],
+  oldopen: ['الأقدم غير المنجزة أولاً', (a, b) => (a.status === 'resolved') - (b.status === 'resolved') || a.createdMs - b.createdMs],
+};
+function rankOf(c) { return c.status === 'resolved' ? 9 : (PRI_RANK[c.priority] ?? 4); }
+let mainSort = 'smart';
+const DONE_SORTS = {
+  newest: ['الأحدث إنجازاً', (a, b) => (b.resolvedMs || 0) - (a.resolvedMs || 0)],
+  oldest: ['الأقدم إنجازاً', (a, b) => (a.resolvedMs || 0) - (b.resolvedMs || 0)],
+  fastest: ['الأسرع إنجازاً', (a, b) => ((a.resolvedMs || 0) - workStart(a)) - ((b.resolvedMs || 0) - workStart(b))],
+  slowest: ['الأبطأ إنجازاً', (a, b) => ((b.resolvedMs || 0) - workStart(b)) - ((a.resolvedMs || 0) - workStart(a))],
+  rating_hi: ['الأعلى تقييماً', (a, b) => b.rating - a.rating || (b.resolvedMs || 0) - (a.resolvedMs || 0)],
+  rating_lo: ['الأقل تقييماً', (a, b) => (a.rating || 9) - (b.rating || 9) || (b.resolvedMs || 0) - (a.resolvedMs || 0)],
+};
+let doneSort = 'newest';
+
 // ---------------- تكبير الصور عند الضغط ----------------
 function zoom(src) {
   const o = h('div', { class: 'lb', onclick: () => o.remove() }, h('img', { src }));
@@ -297,15 +348,25 @@ function renderClassify() {
     h('span', { class: 'chip ok' }, 'المنجزة: ' + items.filter((c) => c.status === 'resolved').length),
     h('span', { class: 'chip warn' }, 'غير المنجزة: ' + items.filter((c) => c.status !== 'resolved').length))];
   if (!sorted.length) out.push(h('div', { class: 'empty' }, 'لا توجد شكاوى مطابقة'));
-  sorted.forEach((g, i) => {
-    g.items.sort((a, b) => b.createdMs - a.createdMs);
-    const done = g.items.filter((c) => c.status === 'resolved').length;
+  sorted.forEach((g) => g.items.sort((a, b) => b.createdMs - a.createdMs));
+  // تقسيم الشكاوى (بترتيب المجموعات) إلى صفحات ثم إعادة تجميع كل صفحة
+  const flat = sorted.flatMap((g) => g.items.map((c) => ({ g, c })));
+  const pg = paginate('classify', flat, JSON.stringify(cls));
+  out.push(pg.bar());
+  const shownGroups = [];
+  pg.slice.forEach((x) => {
+    const last = shownGroups[shownGroups.length - 1];
+    if (last && last.g === x.g) last.items.push(x.c); else shownGroups.push({ g: x.g, items: [x.c] });
+  });
+  shownGroups.forEach((s, i) => {
+    const done = s.g.items.filter((c) => c.status === 'resolved').length;
     const d = h('details', { class: 'grp' },
-      h('summary', {}, g.l + ' — ' + g.items.length + ' شكوى (منجزة ' + done + ')'),
-      ...g.items.map(card));
-    if (i < 2) d.open = true;
+      h('summary', {}, s.g.l + ' — ' + s.g.items.length + ' شكوى (منجزة ' + done + ')' + (s.items.length < s.g.items.length ? ' • المعروض في هذه الصفحة ' + s.items.length : '')),
+      ...s.items.map(card));
+    d.open = i < 3;
     out.push(d);
   });
+  if (flat.length) out.push(pg.bar());
   return out;
 }
 
@@ -316,6 +377,7 @@ function renderDone() {
     field('أُنجزت من', h('input', { type: 'date', value: doneF.from, onchange: (e) => { doneF.from = e.target.value; render(); } })),
     field('إلى', h('input', { type: 'date', value: doneF.to, onchange: (e) => { doneF.to = e.target.value; render(); } })),
     field('بحث', textBox(doneF.q, (v) => { doneF.q = v; })),
+    field('الفرز', sel(Object.entries(DONE_SORTS).map(([k, x]) => [k, x[0]]), doneSort, (v) => { doneSort = v; render(); })),
     h('label', {}, h('input', { type: 'checkbox', checked: doneF.img, onchange: (e) => { doneF.img = e.target.checked; render(); } }), ' مع صورة بعد الصيانة فقط'));
   const f = dateMs(doneF.from), t = dateMs(doneF.to, true), q = doneF.q.trim().toLowerCase();
   const items = list.filter((c) => c.status === 'resolved' &&
@@ -323,16 +385,18 @@ function renderDone() {
     (!doneF.img || c.afterImageB64) &&
     (!f || (c.resolvedMs || c.createdMs) >= f) && (!t || (c.resolvedMs || c.createdMs) <= t) &&
     (!q || (c.title + ' ' + c.text + ' ' + c.reply + ' ' + c.crew).toLowerCase().includes(q)))
-    .sort((a, b) => (b.resolvedMs || 0) - (a.resolvedMs || 0));
+    .sort(DONE_SORTS[doneSort][1]);
   const withImg = items.filter((c) => c.afterImageB64).length;
   const out = [bar, h('div', { class: 'sum' },
     h('span', { class: 'chip ok' }, 'الأعمال المنجزة: ' + items.length),
     h('span', { class: 'chip' }, 'مع صورة بعد الصيانة: ' + withImg))];
   if (!items.length) out.push(h('div', { class: 'empty' }, 'لا توجد أعمال منجزة مطابقة'));
-  items.forEach((c) => {
+  const pg = paginate('done', items, JSON.stringify(doneF) + doneSort);
+  if (items.length) out.push(pg.bar());
+  pg.slice.forEach((c) => {
     out.push(h('div', { class: 'card' },
       h('h3', {}, '✅ ' + c.title),
-      h('small', {}, [c.department, c.crew ? 'الكادر: ' + c.crew : '', c.branch ? 'الفرع: ' + c.branch : ''].filter(Boolean).join(' • ')),
+      h('small', {}, [c.department, c.crew ? 'الكادر: ' + crewLabel(c) : '', c.branch ? 'الفرع: ' + c.branch : ''].filter(Boolean).join(' • ')),
       h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '')),
       c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
       (c.materials && c.repairable) ? h('p', { class: 'small' }, 'المواد: ' + c.materials) : '',
@@ -342,14 +406,238 @@ function renderDone() {
       c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 الموقع') : '',
       logButton(c.id)));
   });
+  if (items.length) out.push(pg.bar());
   return out;
+}
+
+// ---------------- كوادر الأقسام (أسماء الكوادر لإسناد الشكاوى) ----------------
+let crewAdd = { department: '', names: '', msg: '' };
+// صف حساب: الاسم + كلمة مرور جديدة + تعطيل/تفعيل + حذف
+function accountRow(s, label) {
+  const nm = h('input', { type: 'text', value: s.name || '', placeholder: 'الاسم' });
+  const pw = h('input', { type: 'text', placeholder: 'كلمة مرور جديدة' });
+  const st = h('span', { class: 'small' });
+  const run = async (p, okText) => { st.textContent = '...'; const r = await p; st.textContent = r.ok ? '✅ ' + okText : '❌ ' + r.error; return r; };
+  return h('div', { class: s.disabled ? 'card' : 'card' },
+    h('b', {}, label + (s.disabled ? '  ⛔ معطَّل' : '')),
+    h('div', { class: 'bar' },
+      nm, h('button', { class: 'act', onclick: () => run(window.api.setStaffName(s.id, nm.value), 'حُفظ الاسم') }, 'حفظ الاسم'),
+      pw, h('button', { class: 'act', onclick: () => run(window.api.setStaffPassword(s.id, pw.value), 'تم تغيير كلمة المرور').then((r) => { if (r.ok) pw.value = ''; }) }, 'تغيير كلمة المرور'),
+      h('button', { class: 'act', onclick: () => run(window.api.setStaffDisabled(s.id, !s.disabled), s.disabled ? 'تم التفعيل' : 'تم التعطيل') }, s.disabled ? 'تفعيل الحساب' : 'تعطيل الحساب'),
+      h('button', { class: 'act', onclick: async () => {
+        if (!confirm('حذف هذا الحساب نهائياً؟\n' + label + '\n(لا يحذف الشكاوى السابقة)')) return;
+        await run(window.api.deleteStaff(s.id), 'تم الحذف');
+      } }, '🗑 حذف'), st));
+}
+let deptCrews = [];
+let deptStaffForm = { department: '', name: '', email: '', password: '', msg: '' };
+function deptStaffCard() {
+  const depts = allDepts();
+  if (!deptStaffForm.department && depts.length) deptStaffForm.department = depts[0];
+  const f = deptStaffForm;
+  const inp = (key, ph) => h('input', { type: 'text', placeholder: ph, value: f[key], oninput: (e) => { f[key] = e.target.value; } });
+  const msg = h('div', { class: 'small' }, f.msg);
+  const accounts = staff.filter((s) => s.role !== 'crew');
+  return h('div', { class: 'card' },
+    h('h3', {}, '👤 إنشاء حساب موظف قسم'),
+    h('p', { class: 'small' }, 'الحساب الذي يستلم شكاوى القسم ويُسند الكوادر (بدل Firebase Console).'),
+    h('div', { class: 'bar' },
+      field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; })),
+      field('الاسم (اختياري)', inp('name', 'اسم الموظف')),
+      field('البريد', inp('email', 'staff@example.com')),
+      field('كلمة المرور', inp('password', '6 أحرف على الأقل')),
+      h('button', { class: 'act', onclick: async () => {
+        msg.textContent = 'جارٍ الإنشاء...';
+        const r = await window.api.createDeptStaff({ ...f });
+        f.msg = r.ok ? '✅ تم إنشاء الحساب' : '❌ ' + r.error;
+        if (r.ok) { f.name = ''; f.email = ''; f.password = ''; }
+        render();
+      } }, 'إنشاء')),
+    msg,
+    accounts.length ? h('div', {}, h('b', {}, 'حسابات الموظفين:'),
+      ...accounts.map((s) => accountRow(s, (s.departments.join('، ') || '-') + (s.email ? ' • ' + s.email : '')))) : '');
+}
+function crewManager() {
+  const depts = allDepts();
+  if (!crewAdd.department && depts.length) crewAdd.department = depts[0];
+  const msg = h('div', { class: 'small' }, crewAdd.msg);
+  const namesOf = (dept) => [...new Set([
+    ...deptCrews.filter((x) => x.dept === dept).flatMap((x) => x.crews),
+    ...staff.filter((s) => s.role !== 'crew' && s.departments.includes(dept)).flatMap((s) => s.crews || []),
+  ])];
+  const names = h('input', { type: 'text', placeholder: 'كادر 1، كادر 2، كادر 3', value: crewAdd.names, oninput: (e) => { crewAdd.names = e.target.value; } });
+  return h('div', { class: 'card' },
+    h('h3', {}, '🧰 كوادر الأقسام'),
+    h('p', { class: 'small' }, 'أضف أسماء الكوادر التي يُسنِد إليها موظفو القسم الشكاوى. تُحفظ مباشرة وتظهر في قائمة الإسناد في تطبيق الموظف عند فتحه (دون الدخول إلى Firebase).'),
+    h('div', { class: 'bar' },
+      field('القسم', sel(depts.map((d) => [d, d]), crewAdd.department, (v) => { crewAdd.department = v; })),
+      field('أسماء الكوادر (افصل بفاصلة)', names),
+      h('button', { class: 'act', onclick: async () => {
+        const list2 = crewAdd.names.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
+        if (!list2.length) { crewAdd.msg = 'اكتب اسماً واحداً على الأقل'; return render(); }
+        msg.textContent = 'جارٍ الحفظ...';
+        const r = await window.api.editCrews(crewAdd.department, list2, []);
+        crewAdd.msg = r.ok ? '✅ تمت الإضافة' : '❌ ' + r.error;
+        if (r.ok) crewAdd.names = '';
+        render();
+      } }, 'إضافة')),
+    msg,
+    ...depts.map((d) => {
+      const ns = namesOf(d);
+      return ns.length ? h('div', { class: 'sum' }, h('b', {}, d + ': '),
+        ...ns.map((k) => h('span', { class: 'chip' }, '🚧 ' + k + ' ',
+          h('a', { href: '#', title: 'حذف من القائمة', onclick: async (e) => {
+            e.preventDefault();
+            if (!confirm('حذف «' + k + '» من كوادر ' + d + '؟ (لا يحذف حساب الكادر ولا شكاواه)')) return;
+            const r = await window.api.editCrews(d, [], [k]);
+            crewAdd.msg = r.ok ? '✅ تم الحذف' : '❌ ' + r.error; render();
+          } }, '✖')))) : '';
+    }));
+}
+
+// ---------------- حسابات الكوادر ----------------
+let crewForm = { department: '', crew: '', name: '', email: '', password: '', count: '1', msg: '', results: [] };
+// اسم المسؤول عن الكادر (من حساب الكادر) لعرضه بجانب اسم الكادر
+function crewLabel(c) {
+  if (!c.crew) return '';
+  const a = staff.find((s) => s.role === 'crew' && s.crew === c.crew && s.departments.includes(c.department));
+  return c.crew + (a && a.name ? ' (' + a.name + ')' : '');
+}
+function crewAccounts() {
+  const depts = allDepts();
+  if (!crewForm.department && depts.length) crewForm.department = depts[0];
+  const msg = h('div', { class: 'small' }, crewForm.msg);
+  const inp = (key, ph, type) => h('input', { type: type || 'text', placeholder: ph, value: crewForm[key], oninput: (e) => { crewForm[key] = e.target.value; } });
+  const accounts = staff.filter((s) => s.role === 'crew');
+  return h('div', { class: 'card' },
+    h('h3', {}, '➕ إنشاء حساب كادر ميداني'),
+    h('p', { class: 'small' }, 'يرى حساب الكادر شكاواه المُسندة إليه فقط، ويضغط «وصلت إلى الموقع» ثم يرسل الإنجاز.'),
+    h('div', { class: 'bar' },
+      field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; })),
+      field('اسم الكادر', inp('crew', 'مثال: كادر')),
+      field('اسم المسؤول (اختياري)', inp('name', 'مثال: أحمد علي')),
+      field('عدد الكوادر', h('input', { type: 'number', min: '1', max: '30', value: crewForm.count, oninput: (e) => { crewForm.count = e.target.value; } })),
+      field('البريد (أو أساسه)', inp('email', 'crew@example.com')),
+      field('كلمة المرور (للجميع)', inp('password', '6 أحرف على الأقل', 'text')),
+      h('button', { class: 'act', onclick: async () => {
+        msg.textContent = 'جارٍ الإنشاء...';
+        const r = await window.api.createCrew({ ...crewForm });
+        crewForm.msg = r.ok ? '✅ تم إنشاء ' + r.results.length + ' حساب' : '❌ ' + r.error;
+        crewForm.results = r.results || [];
+        if (r.ok) { crewForm.crew = ''; crewForm.name = ''; crewForm.email = ''; crewForm.password = ''; crewForm.count = '1'; }
+        render();
+      } }, 'إنشاء')),
+    h('p', { class: 'small' }, 'عند اختيار عدد أكبر من 1 يُرقَّم الاسم والبريد تلقائياً: «كادر» + 3 ← كادر 1، كادر 2، كادر 3 (crew1@، crew2@، crew3@ بنفس الدومين وكلمة المرور).'),
+    msg,
+    ...crewForm.results.map((r) => h('div', { class: r.ok ? 'rep yes' : 'rep no' }, (r.ok ? '✅ ' : '❌ ') + r.crew + ' — ' + r.email + (r.ok ? '' : ' : ' + r.error))),
+    accounts.length ? h('div', {}, h('b', {}, 'الحسابات الحالية:'),
+      ...accounts.map((s) => accountRow(s, '🚧 ' + s.crew + ' • ' + (s.departments[0] || '') + (s.email ? ' • ' + s.email : '')))) : '');
+}
+
+// ---------------- لوحة أداء الكوادر ----------------
+let perf = { period: 'month', from: '', to: '', dept: 'all', sort: 'done', dir: -1 };
+const PERIODS = { today: 'اليوم', d7: 'آخر 7 أيام', month: 'هذا الشهر', lastmonth: 'الشهر الماضي', all: 'كل الفترات' };
+
+function perfRange() {
+  if (perf.from || perf.to) return [dateMs(perf.from) || 0, dateMs(perf.to, true) || Infinity];
+  const now = new Date();
+  const sod = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const m1 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  if (perf.period === 'today') return [sod, Infinity];
+  if (perf.period === 'd7') return [sod - 6 * DAY, Infinity];
+  if (perf.period === 'month') return [m1, Infinity];
+  if (perf.period === 'lastmonth') return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), m1 - 1];
+  return [0, Infinity];
+}
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
+// الأعمال المحسوبة = المُسندة للكادر خلال الفترة (حسب وقت الاستلام)
+function perfRows() {
+  const [from, to] = perfRange();
+  const rows = [];
+  allDepts().filter((d) => perf.dept === 'all' || d === perf.dept).forEach((dept) => {
+    const names = new Set([
+      ...deptCrews.filter((x) => x.dept === dept).flatMap((x) => x.crews),
+      ...staff.filter((s) => s.departments.includes(dept)).flatMap((s) => s.crews || []),
+      ...list.filter((c) => c.department === dept && c.crew).map((c) => c.crew),
+    ]);
+    names.forEach((crew) => {
+      const cs = list.filter((c) => c.department === dept && c.crew === crew && c.status !== 'new')
+        .filter((c) => { const t = workStart(c); return t >= from && t <= to; });
+      const done = cs.filter((c) => c.status === 'resolved');
+      const rated = done.filter((c) => c.rating > 0);
+      rows.push({
+        dept, crew, label: crewLabel({ crew, department: dept }),
+        assigned: cs.length, done: done.length, open: cs.length - done.length,
+        rate: cs.length ? Math.round((done.length / cs.length) * 100) : null,
+        dur: mean(done.filter((c) => c.resolvedMs).map((c) => c.resolvedMs - workStart(c))),
+        resp: mean(cs.filter((c) => c.arrivedMs && c.crewMs && c.arrivedMs >= c.crewMs).map((c) => c.arrivedMs - c.crewMs)),
+        rating: mean(rated.map((c) => c.rating)), ratedN: rated.length,
+      });
+    });
+  });
+  return rows;
+}
+
+function renderPerf() {
+  const bar = h('div', { class: 'card bar' },
+    field('الفترة', sel(Object.entries(PERIODS), perf.from || perf.to ? '' : perf.period, (v) => { perf.period = v; perf.from = ''; perf.to = ''; render(); })),
+    field('من', h('input', { type: 'date', value: perf.from, onchange: (e) => { perf.from = e.target.value; render(); } })),
+    field('إلى', h('input', { type: 'date', value: perf.to, onchange: (e) => { perf.to = e.target.value; render(); } })),
+    field('القسم', sel([['all', 'كل الأقسام'], ...allDepts().map((d) => [d, d])], perf.dept, (v) => { perf.dept = v; render(); })));
+  const rows = perfRows();
+  if (!rows.length) return [bar, h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد')];
+
+  // الترتيب: القيم الفارغة تأتي أخيراً دائماً
+  const key = perf.sort;
+  rows.sort((a, b) => {
+    const x = a[key], y = b[key];
+    if (x === null || x === undefined) return (y === null || y === undefined) ? 0 : 1;
+    if (y === null || y === undefined) return -1;
+    return (x - y) * perf.dir || (b.done - a.done);
+  });
+
+  const pick = (arr, f, best) => arr.filter((r) => r[f] !== null && r[f] !== undefined && (f !== 'done' || r.done > 0))
+    .sort((a, b) => (best === 'max' ? b[f] - a[f] : a[f] - b[f]))[0];
+  const top = pick(rows, 'done', 'max'), fast = pick(rows, 'dur', 'min'), resp = pick(rows, 'resp', 'min');
+  const rated = rows.filter((r) => r.rating !== null).sort((a, b) => b.rating - a.rating || b.ratedN - a.ratedN)[0];
+  const hl = h('div', { class: 'sum' },
+    top ? h('span', { class: 'chip ok' }, '🏆 الأكثر إنجازاً: ' + top.label + ' (' + top.done + ')') : '',
+    fast ? h('span', { class: 'chip ok' }, '⚡ الأسرع إنجازاً: ' + fast.label + ' (' + fmtD(fast.dur) + ')') : '',
+    resp ? h('span', { class: 'chip ok' }, '🏃 الأسرع استجابة: ' + resp.label + ' (' + fmtD(resp.resp) + ')') : '',
+    rated ? h('span', { class: 'chip ok' }, '⭐ الأعلى تقييماً: ' + rated.label + ' (' + rated.rating.toFixed(1) + ')') : '');
+  const tot = rows.reduce((a, r) => ({ a: a.a + r.assigned, d: a.d + r.done }), { a: 0, d: 0 });
+  const sum = h('div', { class: 'sum' },
+    h('span', { class: 'chip' }, 'الكوادر: ' + rows.length),
+    h('span', { class: 'chip' }, 'الأعمال المُسندة: ' + tot.a),
+    h('span', { class: 'chip ok' }, 'المنجزة: ' + tot.d),
+    h('span', { class: 'chip warn' }, 'قيد العمل: ' + (tot.a - tot.d)));
+
+  const max = Math.max(1, ...rows.map((r) => r.done));
+  const COLS = [['done', 'منجزة'], ['assigned', 'مُسندة'], ['open', 'قيد العمل'], ['rate', 'نسبة الإنجاز'], ['dur', 'متوسط زمن الإنجاز'], ['resp', 'متوسط الاستجابة'], ['rating', 'التقييم']];
+  const th = (k, l) => h('th', { class: 'sortable', onclick: () => { if (perf.sort === k) perf.dir = -perf.dir; else { perf.sort = k; perf.dir = (k === 'dur' || k === 'resp') ? 1 : -1; } render(); } },
+    l + (perf.sort === k ? (perf.dir === -1 ? ' ▼' : ' ▲') : ''));
+  const medal = ['🥇', '🥈', '🥉'];
+  const table = h('table', {},
+    h('tr', {}, h('th', {}, '#'), h('th', {}, 'الكادر'), h('th', {}, 'القسم'), ...COLS.map(([k, l]) => th(k, l))),
+    ...rows.map((r, i) => h('tr', {},
+      h('td', {}, r.assigned ? (medal[i] || String(i + 1)) : String(i + 1)),
+      h('td', {}, r.label), h('td', {}, r.dept),
+      h('td', {}, r.done + ' ' + '█'.repeat(Math.round((r.done / max) * 12))),
+      h('td', {}, String(r.assigned)),
+      h('td', { class: r.open ? 'warn' : '' }, String(r.open)),
+      h('td', {}, r.rate === null ? '-' : r.rate + '%'),
+      h('td', {}, r.dur === null ? '-' : fmtD(r.dur)),
+      h('td', {}, r.resp === null ? '-' : fmtD(r.resp)),
+      h('td', {}, r.rating === null ? '-' : '⭐ ' + r.rating.toFixed(1) + ' (' + r.ratedN + ')'))));
+  return [bar, hl, sum, h('div', { class: 'card' }, h('p', { class: 'small' }, 'الأعمال المحسوبة هي المُسندة للكادر خلال الفترة. اضغط عنوان أي عمود لإعادة الترتيب. زمن الاستجابة = من الإسناد حتى وصول الكادر للموقع.'), table)];
 }
 
 function renderBusy() {
   const stats = crewStats();
-  if (!stats.length) return [h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد (أضف الحقل crews في مستند الموظف)')];
+  if (!stats.length) return [crewManager(), crewAccounts(), deptStaffCard(), h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد: أضف أسماءها من «كوادر الأقسام» أعلاه')];
   const now = Date.now();
-  const out = [];
+  const out = [crewManager(), crewAccounts(), deptStaffCard()];
   let totalBusy = 0, totalFree = 0;
   const blocks = stats.map((d) => {
     const busy = [], free = [];
@@ -459,21 +747,25 @@ function render() {
   if (tab === 'settings') return v.append(...renderSettings());
   if (tab === 'report') return v.append(...renderReport());
   if (tab === 'crews') return v.append(...renderBusy());
+  if (tab === 'perf') return v.append(...renderPerf());
   if (tab === 'classify') return v.append(...renderClassify());
   if (tab === 'done') return v.append(...renderDone());
   if (tab === 'manual') return v.append(...renderManual());
   const items = list.filter((c) => (tab === 'new' ? c.status === 'new' : c.status !== 'new'));
   if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
-  // الأكثر إلحاحاً أولاً (ما لم تُحل)، ثم الأحدث
-  const rank = (c) => (c.status === 'resolved' ? 9 : (PRI_RANK[c.priority] ?? 4));
-  items.sort((a, b) => rank(a) - rank(b) || b.createdMs - a.createdMs);
-  v.append(...items.map(card));
+  items.sort(MAIN_SORTS[mainSort][1]);
+  const pg = paginate(tab, items, mainSort + '|' + items.length);
+  const sortBar = h('div', { class: 'card bar' },
+    field('الفرز', sel(Object.entries(MAIN_SORTS).map(([k, x]) => [k, x[0]]), mainSort, (val) => { mainSort = val; render(); })),
+    h('span', { class: 'small' }, 'الإجمالي: ' + items.length + ' شكوى'));
+  v.append(sortBar, pg.bar(), ...pg.slice.map(card), pg.bar());
 }
 
 document.getElementById('view').addEventListener('click', (e) => { if (e.target.tagName === 'IMG' && e.target.src) zoom(e.target.src); });
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
 window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
-window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews') render(); });
+window.api.onDeptCrews((d) => { deptCrews = d; if (tab === 'crews' || tab === 'perf') render(); });
+window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews' || tab === 'perf') render(); });
 setInterval(() => { if (tab === 'crews') render(); }, 60000);
 window.api.onLog((m) => { document.getElementById('log').textContent = m; });
 window.api.getSettings().then((s) => { settings = s; render(); });

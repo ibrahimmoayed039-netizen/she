@@ -2,11 +2,33 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{db}/documents {
     function isStaff() {
-      return request.auth != null && exists(/databases/$(db)/documents/staff/$(request.auth.uid));
+      return request.auth != null && exists(/databases/$(db)/documents/staff/$(request.auth.uid))
+        && get(/databases/$(db)/documents/staff/$(request.auth.uid)).data.get('disabled', false) != true;
     }
+    function sdata() {
+      return get(/databases/$(db)/documents/staff/$(request.auth.uid)).data;
+    }
+    // حساب كادر ميداني: staff/{uid} فيه role = 'crew' والحقل crew باسم الكادر
+    function isCrew() { return isStaff() && sdata().get('role', '') == 'crew'; }
+    function isDeptStaff() { return isStaff() && sdata().get('role', '') != 'crew'; }
+    function myCrew() { return sdata().get('crew', ''); }
     function myDepts() {
-      let s = get(/databases/$(db)/documents/staff/$(request.auth.uid)).data;
+      let s = sdata();
       return ('departments' in s) ? s.departments : [s.department];
+    }
+    // هل يحق لهذا الموظف/الكادر رؤية الشكوى (بيانات الشكوى c)
+    function canSee(c) {
+      return c.department in myDepts()
+        && (isDeptStaff() || (isCrew() && myCrew() != '' && ('crew' in c) && c.crew == myCrew()));
+    }
+
+    // قائمة الأقسام (أنواع الشكاوى) التي يختار منها المواطن؛ يكتبها برنامج الحاسوب فقط
+    match /config/{d} {
+      allow read: if request.auth != null;
+    }
+    // كوادر الأقسام التي يضيفها المدير من برنامج الحاسوب (قراءة فقط للموظفين)
+    match /deptCrews/{d} {
+      allow read: if isStaff();
     }
     match /staff/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
@@ -18,10 +40,13 @@ service cloud.firestore {
         && request.resource.data.department == '';
       allow read: if request.auth != null
         && (resource.data.userId == request.auth.uid
-            || (isStaff() && resource.data.department in myDepts()));
-      // الموظف: الحالة والرد والتقرير والكادر وصورة ما بعد الصيانة
-      allow update: if isStaff() && resource.data.department in myDepts()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt']);
+            || (isStaff() && canSee(resource.data)));
+      // موظف القسم: الحالة والرد والتقرير والكادر وصورة ما بعد الصيانة
+      allow update: if isDeptStaff() && resource.data.department in myDepts()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt']);
+      // الكادر الميداني: شكاواه المُسندة إليه فقط، ولا يستطيع تغيير الكادر
+      allow update: if isCrew() && canSee(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt']);
       // المواطن: تقييم شكواه مرة واحدة بعد «تم الحل»
       allow update: if request.auth != null
         && resource.data.userId == request.auth.uid
@@ -33,9 +58,9 @@ service cloud.firestore {
 
       // سجل الشكوى
       match /log/{lid} {
-        allow read: if isStaff() && get(/databases/$(db)/documents/complaints/$(id)).data.department in myDepts();
+        allow read: if isStaff() && canSee(get(/databases/$(db)/documents/complaints/$(id)).data);
         allow create: if isStaff()
-          && get(/databases/$(db)/documents/complaints/$(id)).data.department in myDepts()
+          && canSee(get(/databases/$(db)/documents/complaints/$(id)).data)
           && request.resource.data.keys().hasOnly(['by', 'action', 'at']);
       }
     }
