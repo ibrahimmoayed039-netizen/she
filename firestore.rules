@@ -19,7 +19,7 @@ service cloud.firestore {
     // هل يحق لهذا الموظف/الكادر رؤية الشكوى (بيانات الشكوى c)
     function canSee(c) {
       return c.department in myDepts()
-        && (isDeptStaff() || (isCrew() && myCrew() != '' && ('crew' in c) && c.crew == myCrew()));
+        && (isDeptStaff() || (isCrew() && myCrew() != '' && c.crew == myCrew()));
     }
 
     // قائمة الأقسام (أنواع الشكاوى) التي يختار منها المواطن؛ يكتبها برنامج الحاسوب فقط
@@ -43,7 +43,7 @@ service cloud.firestore {
             || (isStaff() && canSee(resource.data)));
       // موظف القسم: الحالة والرد والتقرير والكادر وصورة ما بعد الصيانة
       allow update: if isDeptStaff() && resource.data.department in myDepts()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt', 'materialsReady', 'materialsReadyAt']);
       // الكادر الميداني: شكاواه المُسندة إليه فقط، ولا يستطيع تغيير الكادر
       allow update: if isCrew() && canSee(resource.data)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt']);
@@ -55,6 +55,24 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'ratedAt'])
         && request.resource.data.rating is int
         && request.resource.data.rating >= 1 && request.resource.data.rating <= 5;
+
+      // المواطن: تأكيد أن المشكلة حُلّت (مرة واحدة)
+      allow update: if request.auth != null
+        && resource.data.userId == request.auth.uid
+        && resource.data.status == 'resolved'
+        && !('confirmed' in resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['confirmed', 'confirmedAt'])
+        && request.resource.data.confirmed == true;
+      // المواطن: إعادة فتح شكوى لم تُحل فعلاً (حتى 3 مرات) فتعود للقسم
+      allow update: if request.auth != null
+        && resource.data.userId == request.auth.uid
+        && resource.data.status == 'resolved'
+        && !('confirmed' in resource.data)
+        && request.resource.data.status == 'routed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reopenCount', 'reopenedAt', 'reopenReason', 'arrivedAt', 'updatedAt'])
+        && request.resource.data.reopenCount == resource.data.get('reopenCount', 0) + 1
+        && request.resource.data.reopenCount <= 3
+        && request.resource.data.reopenReason.size() <= 300;
 
       // سجل الشكوى
       match /log/{lid} {

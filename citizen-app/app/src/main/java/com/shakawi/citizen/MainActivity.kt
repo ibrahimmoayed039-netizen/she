@@ -50,7 +50,8 @@ import java.io.ByteArrayOutputStream
 data class Complaint(
     val id: String, val title: String, val text: String, val department: String,
     val status: String, val reply: String, val createdMs: Long,
-    val afterB64: String, val rating: Long
+    val afterB64: String, val rating: Long, val confirmed: Boolean, val reopenCount: Long,
+    val hasCrew: Boolean, val arrived: Boolean
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -58,8 +59,23 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("department") ?: "", d.getString("status") ?: "new",
     d.getString("reply") ?: "",
     d.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis(),
-    d.getString("afterImageB64") ?: "", d.getLong("rating") ?: 0L
+    d.getString("afterImageB64") ?: "", d.getLong("rating") ?: 0L,
+    d.getBoolean("confirmed") ?: false, d.getLong("reopenCount") ?: 0L,
+    !d.getString("crew").isNullOrBlank(), d.getTimestamp("arrivedAt") != null
 )
+
+/** تتبّع الشكوى للمواطن: استُلمت › وُجِّهت › أُسندت لكادر › وصل الكادر › أُنجزت */
+fun trackLine(c: Complaint): String {
+    val steps = listOf(
+        "استُلمت" to true,
+        "وُجِّهت للقسم" to (c.status != "new"),
+        "أُسندت لكادر الصيانة" to (c.hasCrew || c.status == "resolved"),
+        "وصل الكادر" to (c.arrived || c.status == "resolved"),
+        "أُنجزت" to (c.status == "resolved")
+    )
+    val cur = steps.indexOfFirst { !it.second }
+    return steps.mapIndexed { i, s -> (if (s.second) "✔ " else if (i == cur) "⏳ " else "○ ") + s.first }.joinToString(" › ")
+}
 
 fun statusAr(s: String) = when (s) {
     "new" -> "قيد المراجعة"
@@ -117,6 +133,24 @@ suspend fun getMyLocation(ctx: Context): Pair<Double, Double>? {
         if (fresh != null) return fresh.latitude to fresh.longitude
     }
     return best?.let { it.latitude to it.longitude }
+}
+
+/** المواطن يؤكد أن المشكلة حُلّت فعلاً */
+fun confirmDone(id: String) {
+    FirebaseFirestore.getInstance().collection("complaints").document(id).update(
+        mapOf("confirmed" to true, "confirmedAt" to FieldValue.serverTimestamp())
+    )
+}
+
+/** المواطن يعيد فتح الشكوى: تعود للقسم (routed) وتُمسح علامة وصول الكادر ليصل من جديد */
+fun reopenComplaint(id: String, oldCount: Long, reason: String) {
+    FirebaseFirestore.getInstance().collection("complaints").document(id).update(
+        mapOf(
+            "status" to "routed", "reopenCount" to oldCount + 1, "reopenedAt" to FieldValue.serverTimestamp(),
+            "reopenReason" to reason.trim().take(300), "arrivedAt" to FieldValue.delete(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+    )
 }
 
 fun rateComplaint(id: String, n: Int) {
@@ -295,6 +329,9 @@ fun NewTab(onSent: () -> Unit) {
 @Composable
 fun MyTab(uid: String?) {
     var list by remember { mutableStateOf(listOf<Complaint>()) }
+    var reopenId by remember { mutableStateOf<String?>(null) }
+    var reopenOld by remember { mutableStateOf(0L) }
+    var reason by remember { mutableStateOf("") }
     DisposableEffect(uid) {
         if (uid == null) return@DisposableEffect onDispose { }
         val reg = FirebaseFirestore.getInstance().collection("complaints")
@@ -303,6 +340,15 @@ fun MyTab(uid: String?) {
                 if (s != null) list = s.documents.map { toComplaint(it) }.sortedByDescending { it.createdMs }
             }
         onDispose { reg.remove() }
+    }
+    reopenId?.let { rid ->
+        AlertDialog(
+            onDismissRequest = { reopenId = null },
+            title = { Text("لماذا لم تُحل المشكلة؟") },
+            text = { OutlinedTextField(reason, { reason = it }, label = { Text("اكتب السبب (اختياري)") }, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = { Button(onClick = { reopenComplaint(rid, reopenOld, reason); reopenId = null; reason = "" }) { Text("إعادة فتح الشكوى") } },
+            dismissButton = { TextButton(onClick = { reopenId = null }) { Text("إلغاء") } }
+        )
     }
     if (list.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(24.dp)) { Text("لا توجد شكاوى بعد") }
@@ -315,6 +361,7 @@ fun MyTab(uid: String?) {
                     Text(c.title, style = MaterialTheme.typography.titleMedium)
                     Text("الحالة: " + statusAr(c.status), color = MaterialTheme.colorScheme.primary)
                     if (c.department.isNotBlank()) Text("القسم: " + c.department)
+                    Text(trackLine(c), style = MaterialTheme.typography.bodySmall)
                     Text(c.text)
                     if (c.reply.isNotBlank()) Text("رد الجهة المختصة: " + c.reply, style = MaterialTheme.typography.bodyMedium)
                     if (c.afterB64.isNotEmpty()) {
@@ -329,8 +376,15 @@ fun MyTab(uid: String?) {
                             Image(bitmap = ab, contentDescription = null, modifier = Modifier.fillMaxWidth())
                         }
                     }
+                    if (c.reopenCount > 0) Text("🔁 أُعيد فتحها " + c.reopenCount + " مرة")
                     if (c.status == "resolved") {
-                        if (c.rating > 0) Text("تقييمك: " + "⭐".repeat(c.rating.toInt()))
+                        if (!c.confirmed && c.rating == 0L) {
+                            Text("هل تم حل المشكلة فعلاً؟", style = MaterialTheme.typography.titleSmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { confirmDone(c.id) }) { Text("✅ نعم، تم الحل") }
+                                if (c.reopenCount < 3) OutlinedButton(onClick = { reopenId = c.id; reopenOld = c.reopenCount }) { Text("❌ لا، لم تُحل") }
+                            }
+                        } else if (c.rating > 0) Text("تقييمك: " + "⭐".repeat(c.rating.toInt()))
                         else {
                             Text("قيّم الخدمة:")
                             Row {

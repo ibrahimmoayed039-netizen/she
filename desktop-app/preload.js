@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   setStaffDisabled: (id, f) => ipcRenderer.invoke('staff:setDisabled', id, f),
   deleteStaff: (id) => ipcRenderer.invoke('staff:delete', id),
   createCrew: (p) => ipcRenderer.invoke('crew:create', p),
+  materialsReady: (id) => ipcRenderer.invoke('materials:ready', id),
   getLog: (id) => ipcRenderer.invoke('log:get', id),
   openMap: (lat, lng) => ipcRenderer.invoke('map:open', lat, lng),
   onStaff: (cb) => ipcRenderer.on('staff', (_, d) => cb(d)),

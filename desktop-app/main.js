@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -62,6 +62,11 @@ async function notifyToken(token, title, body) {
   try {
     await admin.messaging().send({ token, notification: { title, body }, android: { priority: 'high' } });
   } catch (e) { log('تعذّر إرسال إشعار للمواطن: ' + e.message); }
+}
+
+// إشعار نظام التشغيل للمدير (أعلى الشاشة) عند حدث مهم
+function desk(title, body) {
+  try { if (Notification.isSupported()) new Notification({ title, body: String(body || '').slice(0, 200) }).show(); } catch (e) { }
 }
 
 // ---------- سجل الشكوى ----------
@@ -149,8 +154,11 @@ async function connect() {
             materials: x.materials || '', assessedMs: x.assessedAt ? x.assessedAt.toMillis() : 0,
             crew: x.crew || '', crewMs: x.crewAt ? x.crewAt.toMillis() : 0,
             routedMs: x.routedAt ? x.routedAt.toMillis() : 0, startedMs: x.startedAt ? x.startedAt.toMillis() : 0,
-            resolvedMs: x.resolvedAt ? x.resolvedAt.toMillis() : (x.status === 'resolved' && x.updatedAt ? x.updatedAt.toMillis() : 0),
+            resolvedMs: x.status !== 'resolved' ? 0 : (x.resolvedAt ? x.resolvedAt.toMillis() : (x.updatedAt ? x.updatedAt.toMillis() : 0)),
+            confirmed: x.confirmed === true, reopenCount: x.reopenCount || 0, reopenReason: x.reopenReason || '',
+            reopenedMs: x.reopenedAt ? x.reopenedAt.toMillis() : 0,
             category: x.category || '', aiDepartment: x.aiDepartment || '',
+            materialsReady: x.materialsReady === true, materialsReadyMs: x.materialsReadyAt ? x.materialsReadyAt.toMillis() : 0,
             arrivedMs: x.arrivedAt ? x.arrivedAt.toMillis() : 0,
             lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
             afterImageB64: x.afterImageB64 || '', rating: typeof x.rating === 'number' ? x.rating : 0,
@@ -162,17 +170,40 @@ async function connect() {
         snap.docs.forEach((doc) => {
           const x = doc.data(), prev = lastState.get(doc.id);
           if (seeded && prev && x.status === 'resolved' && prev.status !== 'resolved') log(`✅ أُنجز العمل: "${x.title || ''}"` + (x.crew ? ' (الكادر: ' + x.crew + ')' : ''));
+          const reopenedNow = (x.reopenCount || 0) > (prev ? prev.reopen || 0 : 0);
+          if (seeded && prev && reopenedNow) {
+            const why = x.reopenReason ? ' — السبب: ' + x.reopenReason : '';
+            log(`🔁 أعاد المواطن فتح الشكوى "${x.title || ''}"` + why);
+            addLog(doc.id, 'المواطن', 'أعاد فتح الشكوى (المرة ' + x.reopenCount + ')' + why);
+            desk('🔁 أُعيد فتح شكوى: ' + (x.title || ''), x.reopenReason || 'لم تُحل المشكلة بحسب المواطن');
+            if (x.department) notifyTopic(x.department, '🔁 أُعيد فتح شكوى: ' + (x.title || ''), x.reopenReason || 'لم تُحل المشكلة بحسب المواطن');
+          }
+          // وصول تقرير الكشف من الكادر/الموظف: تنبيه للمدير (إشعار نظام) ولموظفي القسم
+          const assessedMs = x.assessedAt ? x.assessedAt.toMillis() : 0;
+          if (seeded && prev && assessedMs > (prev.assessed || 0)) {
+            const rep = x.repairable === true ? 'ممكن صيانتها' + (x.materials ? ' — المواد المطلوبة: ' + x.materials : '')
+              : x.repairable === false ? 'غير ممكن صيانتها — بانتظار قرار الإدارة' : 'تقرير جديد';
+            log(`📋 تقرير كشف "${x.title || ''}": ${rep}`);
+            desk('📋 تقرير كشف: ' + (x.title || ''), rep);
+            if (x.department) notifyTopic(x.department, '📋 تقرير كشف: ' + (x.title || ''), rep);
+          }
+          // تجهيز المواد: إشعار للكادر
+          if (seeded && prev && x.materialsReady && !prev.matReady && x.crew && x.department) {
+            log(`📦 جُهِّزت المواد لشكوى "${x.title || ''}"`);
+            notifyCrew(x.department, x.crew, '📦 المواد جاهزة', x.title || '');
+          }
           if (seeded && prev) {
             // تكليف كادر بشكوى: إشعار لحساب الكادر
             if (x.crew && x.crew !== prev.crew && x.department) notifyCrew(x.department, x.crew, 'كُلِّفتم بشكوى جديدة', x.title || '');
             if (x.fcmToken) {
               const arrivedNow = x.arrivedAt && !prev.arrived;
-              if (arrivedNow) notifyToken(x.fcmToken, 'وصل كادر الصيانة', 'وصل كادر الصيانة إلى موقع شكواك' + (x.crew ? ' (' + x.crew + ')' : ''));
+              if (reopenedNow) notifyToken(x.fcmToken, 'تم استلام طلبك', 'أُعيد فتح شكواك وأُحيلت إلى القسم مجدداً');
+              else if (arrivedNow) notifyToken(x.fcmToken, 'وصل كادر الصيانة', 'وصل كادر الصيانة إلى موقع شكواك' + (x.crew ? ' (' + x.crew + ')' : ''));
               else if (x.status !== prev.status && PUSH_TEXT[x.status]) { const [t, b] = PUSH_TEXT[x.status](x); notifyToken(x.fcmToken, t, b); }
               else if (x.crew && x.crew !== prev.crew) notifyToken(x.fcmToken, 'تم إسناد شكواك', 'أُسندت شكواك إلى كادر الصيانة: ' + x.crew);
             }
           }
-          lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt });
+          lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt, reopen: x.reopenCount || 0, assessed: x.assessedAt ? x.assessedAt.toMillis() : 0, matReady: x.materialsReady === true });
         });
         seeded = true;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
@@ -380,6 +411,16 @@ ipcMain.handle('complaint:add', async (_, d) => {
   }
 });
 ipcMain.handle('connect', () => connect());
+// المدير يؤكد تجهيز المواد (الإشعار للكادر يُرسل عند وصول التغيير من القاعدة)
+ipcMain.handle('materials:ready', async (_, id) => {
+  try {
+    await db.collection('complaints').doc(String(id)).update({
+      materialsReady: true, materialsReadyAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    addLog(id, 'المدير', 'جُهِّزت المواد المطلوبة');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 // إنشاء حساب كادر ميداني (مستخدم Auth + مستند staff بدور crew)
 // تعديل قائمة كوادر قسم: تُكتب في حقل crews لكل موظف قسم (غير حسابات الكوادر) فتظهر في تطبيقه مباشرة
 async function deptStaffDocs(dept) {
@@ -543,7 +584,7 @@ ipcMain.handle('analyze', (_, id) => analyze(id, true));
 
 app.whenReady().then(() => {
   win = new BrowserWindow({
-    width: 1100, height: 760,
+    width: 1400, height: 860, minWidth: 900, minHeight: 600, backgroundColor: '#0b1437', title: 'مركز الشكاوى',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.setMenuBarVisibility(false);

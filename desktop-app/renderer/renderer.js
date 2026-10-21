@@ -31,7 +31,10 @@ function timeline(c) {
     ['➡️ التوجيه إلى القسم', c.routedMs],
     ['🚧 استلام الكادر' + (c.crew ? ' (' + crewLabel(c) + ')' : ''), c.crewMs],
     ['📍 وصول الكادر إلى الموقع', c.arrivedMs],
+    ['📋 تقرير الكشف', c.assessedMs],
+    ['📦 تجهيز المواد', c.materialsReadyMs],
     ['🔧 بدء المعالجة', c.startedMs],
+    ['🔁 إعادة فتح المواطن', c.reopenedMs],
     ['✅ وقت الإنجاز', c.resolvedMs],
   ].filter((r) => r[1]);
   if (!rows.length) return '';
@@ -45,6 +48,21 @@ function timeline(c) {
   return h('div', { class: 'small' },
     ...rows.map((r) => h('div', {}, r[0] + ': ' + fmtT(r[1]))),
     ...extra.map((t) => h('div', { class: c.resolvedMs ? '' : 'warn' }, t)));
+}
+
+// شريط مراحل الشكوى: استُلمت ← وُجِّهت ← أُسندت ← الكشف ← المواد ← الإنجاز
+function stageSteps(c) {
+  const s = [
+    ['📥 استُلمت', true],
+    ['➡️ وُجِّهت', c.status !== 'new'],
+    ['🚧 أُسندت' + (c.crew ? ' (' + c.crew + ')' : ''), !!c.crew],
+    ['🔍 الكشف', !!(c.arrivedMs || c.assessedMs) || c.status === 'resolved'],
+  ];
+  if (c.repairable === false) s.push(['🚫 غير ممكن الصيانة — بانتظار قرار الإدارة', false]);
+  else if (c.repairable === true && c.materials) s.push(['📦 المواد', !!c.materialsReady || c.status === 'resolved']);
+  s.push(['✅ الإنجاز', c.status === 'resolved']);
+  const cur = s.findIndex((x) => !x[1]);
+  return h('div', { class: 'sum' }, ...s.map((x, i) => h('span', { class: x[1] ? 'chip ok' : i === cur ? 'chip warn' : 'chip' }, (x[1] ? '✔ ' : i === cur ? '⏳ ' : '○ ') + x[0])));
 }
 
 function logButton(id) {
@@ -71,12 +89,18 @@ function priorityPicker(c) {
 function card(c) {
   const urgent = c.priority === 'urgent' && c.status !== 'resolved';
   const meta = [STATUS[c.status] || c.status, c.department, c.priority ? 'أولوية ' + PRI[c.priority] : ''].filter(Boolean).join(' • ');
-  return h('div', { class: urgent ? 'card urgent' : 'card' },
+  return h('div', { class: 'card st-' + c.status + (urgent ? ' urgent' : '') },
     h('h3', {}, (urgent ? '🚨 ' : '') + c.title),
     h('small', {}, meta),
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     h('p', {}, c.text),
-    (c.name || c.phone) ? h('p', {}, 'المواطن: ' + c.name + ' ' + c.phone) : '',
+    (c.name || c.phone) ? h('p', {}, 'المواطن: ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
+    c.status !== 'new' ? stageSteps(c) : '',
+    (c.repairable === true && c.materials && c.status !== 'resolved') ? (c.materialsReady
+      ? h('p', { class: 'rep yes' }, '📦 المواد جاهزة')
+      : h('button', { class: 'act', onclick: () => window.api.materialsReady(c.id) }, '📦 تم تجهيز المواد (إشعار الكادر)')) : '',
+    c.reopenCount ? h('p', { class: 'rep no' }, '🔁 أعاد المواطن فتحها ' + c.reopenCount + ' مرة' + (c.reopenReason ? ' — السبب: ' + c.reopenReason : '')) : '',
+    c.confirmed ? h('p', { class: 'rep yes' }, '✔ أكّد المواطن أن المشكلة حُلّت') : '',
     c.category ? h('p', { class: 'small' }, '🗂 النوع الذي اختاره المواطن: ' + c.category + (c.aiDepartment ? ' (اقترح التحليل: ' + c.aiDepartment + ')' : '')) : '',
     c.dupTitle ? h('p', { class: 'rep no' }, '🔁 مكررة: تشبه شكوى سابقة («' + c.dupTitle + '»)') : '',
     c.dupCount ? h('p', { class: 'small' }, '🔁 تكررت هذه الشكوى ' + c.dupCount + ' مرة') : '',
@@ -303,6 +327,7 @@ const CLS = {
   branch: { name: 'الفرع', f: (c) => ({ k: c.branch || '~', l: c.branch || 'بدون فرع' }) },
   speed: { name: 'سرعة الإنجاز', f: speedOf },
   rating: { name: 'تقييم المواطن', f: (c) => c.rating ? { k: 5 - c.rating, l: '⭐'.repeat(c.rating) + ' (' + c.rating + ')' } : { k: 9, l: 'لم يُقيَّم' } },
+  confirm: { name: 'تأكيد المواطن', f: (c) => c.reopenCount && c.status !== 'resolved' ? { k: 1, l: '🔁 أُعيد فتحها (قيد المعالجة)' } : c.status !== 'resolved' ? { k: 4, l: 'غير منجزة' } : c.confirmed ? { k: 0, l: '✔ أكّد المواطن الإنجاز' } : { k: 2, l: '⏳ منجزة بانتظار تأكيد المواطن' } },
   dup: { name: 'المكررة', f: (c) => c.dupTitle ? { k: 1, l: '🔁 شكاوى مكررة' } : c.dupCount ? { k: 0, l: '📌 شكاوى تكررت (الأصلية)' } : { k: 2, l: 'عادية' } },
 };
 let cls = { by: 'day', status: 'all', dept: 'all', from: '', to: '', q: '' };
@@ -397,7 +422,7 @@ function renderDone() {
     out.push(h('div', { class: 'card' },
       h('h3', {}, '✅ ' + c.title),
       h('small', {}, [c.department, c.crew ? 'الكادر: ' + crewLabel(c) : '', c.branch ? 'الفرع: ' + c.branch : ''].filter(Boolean).join(' • ')),
-      h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '')),
+      h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '') + (c.confirmed ? ' • ✔ أكّد المواطن' : ' • ⏳ لم يؤكد المواطن بعد') + (c.reopenCount ? ' • 🔁 أُعيد فتحها ' + c.reopenCount + ' مرة' : '')),
       c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
       (c.materials && c.repairable) ? h('p', { class: 'small' }, 'المواد: ' + c.materials) : '',
       (c.imageB64 || c.afterImageB64) ? h('div', { class: 'ba' },
@@ -573,6 +598,7 @@ function perfRows() {
         dur: mean(done.filter((c) => c.resolvedMs).map((c) => c.resolvedMs - workStart(c))),
         resp: mean(cs.filter((c) => c.arrivedMs && c.crewMs && c.arrivedMs >= c.crewMs).map((c) => c.arrivedMs - c.crewMs)),
         rating: mean(rated.map((c) => c.rating)), ratedN: rated.length,
+        reopened: cs.reduce((a, c) => a + (c.reopenCount || 0), 0),
       });
     });
   });
@@ -614,7 +640,7 @@ function renderPerf() {
     h('span', { class: 'chip warn' }, 'قيد العمل: ' + (tot.a - tot.d)));
 
   const max = Math.max(1, ...rows.map((r) => r.done));
-  const COLS = [['done', 'منجزة'], ['assigned', 'مُسندة'], ['open', 'قيد العمل'], ['rate', 'نسبة الإنجاز'], ['dur', 'متوسط زمن الإنجاز'], ['resp', 'متوسط الاستجابة'], ['rating', 'التقييم']];
+  const COLS = [['done', 'منجزة'], ['assigned', 'مُسندة'], ['open', 'قيد العمل'], ['rate', 'نسبة الإنجاز'], ['dur', 'متوسط زمن الإنجاز'], ['resp', 'متوسط الاستجابة'], ['rating', 'التقييم'], ['reopened', 'أُعيد فتحها']];
   const th = (k, l) => h('th', { class: 'sortable', onclick: () => { if (perf.sort === k) perf.dir = -perf.dir; else { perf.sort = k; perf.dir = (k === 'dur' || k === 'resp') ? 1 : -1; } render(); } },
     l + (perf.sort === k ? (perf.dir === -1 ? ' ▼' : ' ▲') : ''));
   const medal = ['🥇', '🥈', '🥉'];
@@ -629,7 +655,8 @@ function renderPerf() {
       h('td', {}, r.rate === null ? '-' : r.rate + '%'),
       h('td', {}, r.dur === null ? '-' : fmtD(r.dur)),
       h('td', {}, r.resp === null ? '-' : fmtD(r.resp)),
-      h('td', {}, r.rating === null ? '-' : '⭐ ' + r.rating.toFixed(1) + ' (' + r.ratedN + ')'))));
+      h('td', {}, r.rating === null ? '-' : '⭐ ' + r.rating.toFixed(1) + ' (' + r.ratedN + ')'),
+      h('td', { class: r.reopened ? 'warn' : '' }, String(r.reopened)))));
   return [bar, hl, sum, h('div', { class: 'card' }, h('p', { class: 'small' }, 'الأعمال المحسوبة هي المُسندة للكادر خلال الفترة. اضغط عنوان أي عمود لإعادة الترتيب. زمن الاستجابة = من الإسناد حتى وصول الكادر للموقع.'), table)];
 }
 
@@ -740,10 +767,31 @@ function renderManual() {
     } }, 'حفظ الشكوى')))];
 }
 
+// عنوان الصفحة وعدّادات الشريط الجانبي ومؤشرات الأداء السريعة
+function updateChrome() {
+  const b = document.querySelector('nav button.on');
+  const t = document.getElementById('title');
+  if (t && b) t.textContent = (b.querySelector('.lbl') || b).textContent;
+  const cnt = (f) => list.filter(f).length;
+  const setBadge = (id, n) => { const e = document.getElementById(id); if (e) { e.textContent = n; e.classList.toggle('hide', !n); } };
+  setBadge('b-new', cnt((c) => c.status === 'new'));
+  setBadge('b-routed', cnt((c) => c.status === 'routed' || c.status === 'in_progress'));
+  const k = document.getElementById('kpis');
+  if (!k) return;
+  const sod = new Date(); sod.setHours(0, 0, 0, 0);
+  const kpi = (cls, n, l) => h('span', { class: 'kpi ' + cls }, h('b', {}, String(n)), l);
+  k.replaceChildren(
+    kpi('amber', cnt((c) => c.status === 'new'), 'جديدة'),
+    kpi('', cnt((c) => c.status === 'routed' || c.status === 'in_progress'), 'قيد المعالجة'),
+    kpi('red', cnt((c) => c.priority === 'urgent' && c.status !== 'resolved' && c.status !== 'new'), 'عاجلة مفتوحة'),
+    kpi('green', cnt((c) => c.status === 'resolved' && c.resolvedMs >= sod.getTime()), 'منجزة اليوم'));
+}
+
 function render() {
   const v = document.getElementById('view');
   v.replaceChildren();
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+  updateChrome();
   if (tab === 'settings') return v.append(...renderSettings());
   if (tab === 'report') return v.append(...renderReport());
   if (tab === 'crews') return v.append(...renderBusy());

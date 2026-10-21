@@ -50,7 +50,9 @@ data class Complaint(
     val createdMs: Long, val imageB64: String, val name: String, val phone: String,
     val branch: String, val repairable: Boolean?, val materials: String, val crew: String,
     val lat: Double?, val lng: Double?, val afterB64: String, val dupTitle: String,
-    val dupCount: Long, val rating: Long, val arrivedMs: Long
+    val dupCount: Long, val rating: Long, val arrivedMs: Long,
+    val reopenCount: Long, val reopenReason: String, val confirmed: Boolean,
+    val materialsReady: Boolean, val assessedMs: Long
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -64,7 +66,9 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("crew") ?: "",
     d.getDouble("lat"), d.getDouble("lng"), d.getString("afterImageB64") ?: "",
     d.getString("dupTitle") ?: "", d.getLong("dupCount") ?: 0L, d.getLong("rating") ?: 0L,
-    d.getTimestamp("arrivedAt")?.toDate()?.time ?: 0L
+    d.getTimestamp("arrivedAt")?.toDate()?.time ?: 0L,
+    d.getLong("reopenCount") ?: 0L, d.getString("reopenReason") ?: "", d.getBoolean("confirmed") ?: false,
+    d.getBoolean("materialsReady") ?: false, d.getTimestamp("assessedAt")?.toDate()?.time ?: 0L
 )
 
 fun priorityAr(p: String): String = when (p) {
@@ -83,6 +87,28 @@ fun logEvent(id: String, action: String) {
     val by = myDisplayName.ifBlank { FirebaseAuth.getInstance().currentUser?.email ?: "موظف" }
     FirebaseFirestore.getInstance().collection("complaints").document(id).collection("log")
         .add(mapOf("by" to by, "action" to action, "at" to FieldValue.serverTimestamp()))
+}
+
+/** شريط مراحل الشكوى: استُلمت › وُجِّهت › أُسندت › الكشف › المواد › الإنجاز */
+fun stageLine(c: Complaint): String {
+    val steps = mutableListOf<Pair<String, Boolean>>()
+    steps += "استُلمت" to true
+    steps += "وُجِّهت" to (c.status != "new")
+    steps += "أُسندت" to c.crew.isNotBlank()
+    steps += "الكشف" to (c.arrivedMs > 0 || c.assessedMs > 0 || c.status == "resolved")
+    if (c.repairable == false) steps += "🚫 غير ممكن الصيانة" to false
+    else if (c.repairable == true && c.materials.isNotBlank()) steps += "المواد" to (c.materialsReady || c.status == "resolved")
+    steps += "الإنجاز" to (c.status == "resolved")
+    val cur = steps.indexOfFirst { !it.second }
+    return steps.mapIndexed { i, s -> (if (s.second) "✔ " else if (i == cur) "⏳ " else "○ ") + s.first }.joinToString(" › ")
+}
+
+/** تأكيد تجهيز المواد المطلوبة (موظف القسم) فيصل الكادر إشعار من برنامج الحاسوب */
+fun markMaterialsReady(id: String) {
+    val ts = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("materialsReady" to true, "materialsReadyAt" to ts, "updatedAt" to ts))
+    logEvent(id, "جُهِّزت المواد المطلوبة")
 }
 
 /** الأكثر إلحاحاً أولاً */
@@ -129,11 +155,18 @@ fun compressImage(ctx: Context, uri: Uri): String {
     while (bounds.outWidth / sample > 1600) sample *= 2
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
     val bmp = ctx.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, opts) }!!
-    val scale = minOf(1f, 800f / maxOf(bmp.width, bmp.height))
-    val scaled = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
-    val out = ByteArrayOutputStream()
-    scaled.compress(Bitmap.CompressFormat.JPEG, 60, out)
-    return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    // حدّ المستند في Firestore 1MB (يشمل صورة المواطن): نُصغّر الصورة حتى لا تتجاوز ~250KB
+    var side = 800f
+    var quality = 60
+    while (true) {
+        val scale = minOf(1f, side / maxOf(bmp.width, bmp.height))
+        val scaled = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        if (out.size() <= 250_000 || side <= 400f) return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        side -= 100f
+        quality = maxOf(40, quality - 5)
+    }
 }
 
 /** إنجاز العمل: يُنهي الشكوى ويُرسل الرد وصورة بعد الصيانة للمواطن والمدير دفعة واحدة */
@@ -334,6 +367,7 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = list.firstOrNull { it.id == selectedId }
 
+    var loadErr by remember { mutableStateOf("") }
     DisposableEffect(depts, crewName) {
         // مستمع لكل قسم (وللكادر: شكاواه المُسندة فقط) ثم دمج النتائج
         val parts = mutableMapOf<String, List<Complaint>>()
@@ -341,11 +375,14 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
             FirebaseFirestore.getInstance().collection("complaints")
                 .whereEqualTo("department", d)
                 .let { q -> if (crewName.isNotBlank()) q.whereEqualTo("crew", crewName) else q }
-                .addSnapshotListener { s, _ ->
-                    if (s != null) {
+                .addSnapshotListener { s, e ->
+                    if (e != null) {
+                        loadErr = (e.message ?: "خطأ غير معروف")
+                    } else if (s != null) {
+                        loadErr = ""
                         parts[d] = s.documents.map { toComplaint(it) }
                         list = parts.values.flatten().sortedWith(
-                            compareBy<Complaint>({ priorityRank(it.priority) }).thenByDescending { it.createdMs }
+                            compareBy<Complaint>({ if (it.reopenCount > 0 && it.status != "resolved") -1 else priorityRank(it.priority) }).thenByDescending { it.createdMs }
                         )
                     }
                 }
@@ -372,18 +409,27 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
             if (tab < 3) {
                 val shown = list.filter { it.status == statuses[tab] }
                 if (shown.isEmpty()) {
-                    Box(Modifier.fillMaxSize().padding(24.dp)) { Text("لا توجد شكاوى هنا") }
+                    Box(Modifier.fillMaxSize().padding(24.dp)) {
+                        if (loadErr.isNotBlank()) Text(
+                            "تعذّر تحميل الشكاوى: " + (if (loadErr.contains("PERMISSION_DENIED")) "رُفض من الخادم. انشر قواعد Firestore الأحدث (Rules ← Publish)، وتأكد أن مستند حسابك في staff فيه القسم (department) وللكادر role = crew وcrew باسمه." else loadErr),
+                            color = MaterialTheme.colorScheme.error
+                        ) else Text("لا توجد شكاوى هنا")
+                    }
                 } else LazyColumn(
                     Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    if (loadErr.isNotBlank()) item { Text("⚠️ تعذّر تحديث الشكاوى: $loadErr", color = MaterialTheme.colorScheme.error) }
                     items(shown, key = { it.id }) { c ->
                         Card(Modifier.fillMaxWidth().clickable { selectedId = c.id }) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(c.title, style = MaterialTheme.typography.titleMedium)
                                 Text(if (c.priority == "urgent") "🚨 الأولوية: عاجلة" else "الأولوية: " + priorityAr(c.priority),
                                     color = if (c.priority == "urgent") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                                if (c.reopenCount > 0 && c.status != "resolved") Text("🔁 أعاد المواطن فتحها (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — " + c.reopenReason else ""), color = MaterialTheme.colorScheme.error)
                                 if (c.crew.isNotBlank()) Text("🚧 الكادر: " + c.crew)
+                                Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
+                                if (c.repairable == true && c.materials.isNotBlank() && !c.materialsReady && c.status != "resolved") Text("📦 مواد مطلوبة بانتظار التجهيز", color = MaterialTheme.colorScheme.error)
                                 if (c.dupTitle.isNotBlank()) Text("🔁 مكررة: يوجد بلاغ سابق مماثل", color = MaterialTheme.colorScheme.error)
                                 if (c.dupCount > 0) Text("🔁 تكررت " + c.dupCount + " مرة")
                                 if (c.lat != null) Text("📍 لها موقع على الخريطة")
@@ -402,6 +448,8 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                     Text("الإصدار: $ver")
                     if (crewName.isNotBlank()) Text("🚧 حساب كادر: $crewName")
                     Text("الأقسام: " + depts.joinToString("، "))
+                    Text("عدد الشكاوى الظاهرة لهذا الحساب: ${list.size}")
+                    if (loadErr.isNotBlank()) Text("⚠️ $loadErr", color = MaterialTheme.colorScheme.error)
                     if (branches.isNotEmpty()) Text("الفروع: " + branches.joinToString("، "))
                     if (crews.isNotEmpty()) Text("الكوادر: " + crews.joinToString("، "))
                     Button(onClick = { signOutStaff(depts, crewName) }) { Text("تسجيل الخروج") }
@@ -461,10 +509,20 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 Text("الأولوية: " + priorityAr(c.priority))
                 if (c.summary.isNotBlank()) Text("ملخص: " + c.summary)
                 if (c.crew.isNotBlank()) Text("🚧 مُسندة إلى: " + c.crew)
+                if (c.reopenCount > 0) Text("🔁 أعاد المواطن فتح الشكوى (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — السبب: " + c.reopenReason else ""), color = MaterialTheme.colorScheme.error)
+                if (c.status == "resolved" && c.confirmed) Text("✔ أكّد المواطن أن المشكلة حُلّت")
                 if (c.dupTitle.isNotBlank()) Text("🔁 شكوى مكررة: يوجد بلاغ سابق مماثل («" + c.dupTitle + "»)", color = MaterialTheme.colorScheme.error)
                 if (c.dupCount > 0) Text("🔁 تكررت هذه الشكوى " + c.dupCount + " مرة")
                 if (c.lat != null && c.lng != null) OutlinedButton(onClick = { openMap(ctx, c.lat, c.lng) }) { Text("📍 فتح موقع الشكوى على الخريطة") }
                 if (c.rating > 0) Text("تقييم المواطن: " + "⭐".repeat(c.rating.toInt()))
+                Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
+                if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved") {
+                    Text("📦 المواد المطلوبة: " + c.materials)
+                    if (c.materialsReady) Text("✅ المواد جاهزة")
+                    else if (crewMode) Text("⏳ بانتظار تجهيز المواد من القسم")
+                    else Button(onClick = { markMaterialsReady(c.id); onClose() }) { Text("📦 تم تجهيز المواد") }
+                }
+                if (c.repairable == false && c.status != "resolved") Text("🚫 التقرير: غير ممكن الصيانة — بانتظار قرار الإدارة", color = MaterialTheme.colorScheme.error)
                 Text(c.text)
                 if (bmp != null) Image(bitmap = bmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
                 if (c.name.isNotBlank() || c.phone.isNotBlank()) Text("المواطن: ${c.name} ${c.phone}")
@@ -540,7 +598,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                             err = ""; sending = true
                             completeWork(c.id, reply.trim(), pendingAfter) { e ->
                                 sending = false
-                                if (e == null) onClose() else err = e
+                                if (e == null) onClose() else { err = e; android.widget.Toast.makeText(ctx, e, android.widget.Toast.LENGTH_LONG).show() }
                             }
                             scope.launch {
                                 delay(20000)

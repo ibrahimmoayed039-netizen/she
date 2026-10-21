@@ -7,19 +7,37 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <nav>
-    <button data-t="new" class="on">بانتظار التحليل</button>
-    <button data-t="routed">تم التوجيه</button>
-    <button data-t="manual">إدخال يدوي</button>
-    <button data-t="classify">تصنيف الشكاوى</button>
-    <button data-t="done">الأعمال المنجزة</button>
-    <button data-t="perf">أداء الكوادر</button>
-    <button data-t="crews">الكوادر المشغولة</button>
-    <button data-t="report">تقارير الفروع</button>
-    <button data-t="settings">الإعدادات</button>
-  </nav>
-  <div id="log"></div>
-  <main id="view"></main>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <div class="logo">📣</div>
+        <div class="brand-t"><b>مركز الشكاوى</b><span>إدارة وتوجيه ومتابعة</span></div>
+      </div>
+      <nav>
+        <div class="nav-grp">الشكاوى</div>
+        <button data-t="new" class="on"><span class="ico">📥</span><span class="lbl">بانتظار التحليل</span><span class="badge hide" id="b-new"></span></button>
+        <button data-t="routed"><span class="ico">📌</span><span class="lbl">تم التوجيه</span><span class="badge soft hide" id="b-routed"></span></button>
+        <button data-t="manual"><span class="ico">✍️</span><span class="lbl">إدخال يدوي</span></button>
+        <button data-t="classify"><span class="ico">🗂️</span><span class="lbl">تصنيف الشكاوى</span></button>
+        <button data-t="done"><span class="ico">✅</span><span class="lbl">الأعمال المنجزة</span></button>
+        <div class="nav-grp">المتابعة</div>
+        <button data-t="perf"><span class="ico">📊</span><span class="lbl">أداء الكوادر</span></button>
+        <button data-t="crews"><span class="ico">🚧</span><span class="lbl">الكوادر والحسابات</span></button>
+        <button data-t="report"><span class="ico">🏢</span><span class="lbl">تقارير الفروع</span></button>
+        <div class="nav-grp">النظام</div>
+        <button data-t="settings"><span class="ico">⚙️</span><span class="lbl">الإعدادات</span></button>
+      </nav>
+      <div class="side-foot">نظام الشكاوى المتكامل</div>
+    </aside>
+    <section class="content">
+      <header class="topbar">
+        <h1 id="title">مركز الشكاوى</h1>
+        <div id="kpis" class="kpis"></div>
+        <div id="log"></div>
+      </header>
+      <main id="view"></main>
+    </section>
+  </div>
   <script src="renderer.js"></script>
 </body>
 </html>
