@@ -487,7 +487,7 @@ function askConfirm(msg) {
     document.body.append(ov); no.focus();
   });
 }
-let crewAdd = { department: '', names: '', msg: '' };
+let crewAdd = { department: '', names: '', count: '1', msg: '' };
 // صف حساب: الاسم + كلمة مرور جديدة + تعطيل/تفعيل + حذف
 function accountRow(s, label) {
   const nm = h('input', { type: 'text', value: s.name || '', placeholder: 'الاسم' });
@@ -708,13 +708,17 @@ function crewManager() {
     h('div', { class: 'bar' },
       field('القسم', sel(depts.map((d) => [d, d]), crewAdd.department, (v) => { crewAdd.department = v; })),
       field('أسماء الكوادر (افصل بفاصلة)', names),
+      field('العدد (يُرقِّم الاسم: كادر ← كادر 1، كادر 2…)', h('input', { type: 'number', min: '1', max: '50', value: crewAdd.count, oninput: (e) => { crewAdd.count = e.target.value; } })),
       h('button', { class: 'act', onclick: async () => {
-        const list2 = crewAdd.names.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
+        let list2 = crewAdd.names.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
         if (!list2.length) { crewAdd.msg = 'اكتب اسماً واحداً على الأقل'; return render(); }
+        const cnt = Math.max(1, Math.min(50, parseInt(crewAdd.count, 10) || 1));
+        // العدد > 1: كل اسم يُرقَّم (كادر ← كادر 1 … كادر N) بنفس صيغة إنشاء الحسابات
+        if (cnt > 1) list2 = list2.flatMap((k) => Array.from({ length: cnt }, (_, i) => k + ' ' + (i + 1)));
         msg.textContent = 'جارٍ الحفظ...';
         const r = await window.api.editCrews(crewAdd.department, list2, []);
         crewAdd.msg = r.ok ? '✅ تمت الإضافة' : '❌ ' + r.error;
-        if (r.ok) crewAdd.names = '';
+        if (r.ok) { crewAdd.names = ''; crewAdd.count = '1'; }
         render();
       } }, 'إضافة')),
     msg,
@@ -739,6 +743,18 @@ function crewLabel(c) {
   const a = staff.find((s) => s.role === 'crew' && s.crew === c.crew && s.departments.includes(c.department));
   return c.crew + (a && a.name ? ' (' + a.name + ')' : '');
 }
+// أسماء كوادر القسم المُضافة في «كوادر الأقسام»
+function deptCrewNames(dept) {
+  return [...new Set([
+    ...deptCrews.filter((x) => x.dept === dept).flatMap((x) => x.crews),
+    ...staff.filter((s) => s.role !== 'crew' && s.departments.includes(dept)).flatMap((s) => s.crews || []),
+  ])];
+}
+// أسماء كوادر القسم التي لم يُنشأ لها حساب بعد
+function freeCrewNames(dept) {
+  const have = new Set(staff.filter((s) => s.role === 'crew' && s.departments.includes(dept)).map((s) => s.crew));
+  return deptCrewNames(dept).filter((k) => !have.has(k));
+}
 function crewAccounts() {
   const depts = allDepts();
   if (!crewForm.department && depts.length) crewForm.department = depts[0];
@@ -752,20 +768,42 @@ function crewAccounts() {
       field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; crewForm.sector = ''; crewForm.areas = []; render(); })),
       field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(crewForm.department).map((x) => [x.name, x.name])], crewForm.sector, (v) => { crewForm.sector = v; crewForm.areas = []; render(); })),
       field('المناطق التي يغطيها', areaPicker(crewForm.department, crewForm.sector, crewForm.areas, (v) => { crewForm.areas = v; })),
-      field('اسم الكادر', inp('crew', 'مثال: كادر')),
+      field('اسم الكادر (اختر من كوادر القسم)', (() => {
+        // الأسماء المُضافة في «كوادر الأقسام» والتي لا يوجد لها حساب بعد؛ الاختيار فقط لضمان المطابقة حرفاً بحرف
+        const free = freeCrewNames(crewForm.department);
+        if (crewForm.crew && crewForm.crew !== '__all__' && !free.includes(crewForm.crew)) crewForm.crew = '';
+        if (!crewForm.crew && free.length) crewForm.crew = free[0];
+        if (!free.length) return h('div', { class: 'small' }, '⚠️ لا توجد كوادر بلا حساب في هذا القسم. أضِف الأسماء أولاً من «كوادر الأقسام».');
+        return sel([...free.map((k) => [k, k]), ...(free.length > 1 ? [['__all__', '⭐ كل الكوادر بلا حساب (' + free.length + ') — يُرقَّم البريد']] : [])], crewForm.crew, (v) => { crewForm.crew = v; render(); });
+      })()),
       field('اسم المسؤول (اختياري)', inp('name', 'مثال: أحمد علي')),
-      field('عدد الكوادر', h('input', { type: 'number', min: '1', max: '30', value: crewForm.count, oninput: (e) => { crewForm.count = e.target.value; } })),
-      field('البريد (أو أساسه)', inp('email', 'crew@example.com')),
+      field(crewForm.crew === '__all__' ? 'البريد (أساسه: crew@… ← crew1@…)' : 'البريد', inp('email', 'crew@example.com')),
       field('كلمة المرور (للجميع)', inp('password', '6 أحرف على الأقل', 'text')),
       h('button', { class: 'act', onclick: async () => {
         msg.textContent = 'جارٍ الإنشاء...';
-        const r = await window.api.createCrew({ ...crewForm });
-        crewForm.msg = r.ok ? '✅ تم إنشاء ' + r.results.length + ' حساب' : '❌ ' + r.error;
+        if (!crewForm.crew) { crewForm.msg = '❌ اختر اسم الكادر من القائمة'; return render(); }
+        let r;
+        if (crewForm.crew === '__all__') {
+          // إنشاء حساب لكل كادر بلا حساب؛ رقم البريد = ترتيب الكادر في قائمة القسم (لا يتكرر)
+          const all = deptCrewNames(crewForm.department), free = freeCrewNames(crewForm.department);
+          const em = String(crewForm.email || '').trim().toLowerCase();
+          if (!em.includes('@')) { crewForm.msg = '❌ أدخل بريداً صحيحاً'; return render(); }
+          const [loc, dom] = em.split('@');
+          r = { ok: true, error: '', results: [] };
+          for (const k of free) {
+            const one = await window.api.createCrew({ ...crewForm, crew: k, count: '1', name: '', email: loc + (all.indexOf(k) + 1) + '@' + dom });
+            r.results.push(...(one.results || []));
+            if (!one.ok) { r.ok = false; r.error = one.error; }
+          }
+        } else {
+          r = await window.api.createCrew({ ...crewForm, count: '1' });
+        }
+        crewForm.msg = r.ok ? '✅ تم إنشاء ' + r.results.length + ' حساب' : '❌ ' + (r.error || 'فشل');
         crewForm.results = r.results || [];
         if (r.ok) { crewForm.crew = ''; crewForm.name = ''; crewForm.email = ''; crewForm.password = ''; crewForm.count = '1'; crewForm.areas = []; }
         render();
       } }, 'إنشاء')),
-    h('p', { class: 'small' }, 'عند اختيار عدد أكبر من 1 يُرقَّم الاسم والبريد تلقائياً: «كادر» + 3 ← كادر 1، كادر 2، كادر 3 (crew1@، crew2@، crew3@ بنفس الدومين وكلمة المرور).'),
+    h('p', { class: 'small' }, 'الأسماء تُضاف من «كوادر الأقسام» (مع خانة العدد للترقيم التلقائي)، وهنا تختارها من القائمة فيُضمن تطابقها مع الشكاوى المُسندة. خيار «كل الكوادر بلا حساب» ينشئ لكل كادر حساباً ببريد مُرقَّم (crew1@، crew2@…) وكلمة المرور نفسها.'),
     msg,
     ...crewForm.results.map((r) => h('div', { class: r.ok ? 'rep yes' : 'rep no' }, (r.ok ? '✅ ' : '❌ ') + r.crew + ' — ' + r.email + (r.ok ? '' : ' : ' + r.error))),
     accounts.length ? h('div', {}, h('b', {}, 'الحسابات الحالية:'),

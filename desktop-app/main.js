@@ -326,8 +326,14 @@ function syncConfig() {
   db.collection('config').doc('departments').set({ list: store.get('departments') || [] })
     .catch((e) => log('تعذّر نشر قائمة الأقسام: ' + e.message));
   // قواطع ومناطق كل قسم ليختار منها المواطن حيّه عند الإرسال
+  const secs = store.get('sectors') || [];
+  const byDept = {};
+  secs.forEach((x) => { byDept[x.dept] = [...new Set([...(byDept[x.dept] || []), ...(x.areas || [])])]; });
   db.collection('config').doc('areas').set({
-    list: (store.get('sectors') || []).map((x) => ({ dept: x.dept, name: x.name, areas: x.areas || [] })),
+    list: secs.map((x) => ({ dept: x.dept, name: x.name, areas: x.areas || [] })),
+    // يستعملها firestore.rules لإلزام المواطن بالحي: byDept لكل قسم، all لكل الأحياء
+    byDept,
+    all: [...new Set(secs.flatMap((x) => x.areas || []))],
   }).catch((e) => log('تعذّر نشر قائمة الأحياء: ' + e.message));
 }
 
