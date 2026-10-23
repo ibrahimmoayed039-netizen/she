@@ -3,6 +3,7 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (s) => ipcRenderer.invoke('settings:set', s),
   pickKey: () => ipcRenderer.invoke('key:pick'),
+  resetData: () => ipcRenderer.invoke('data:reset'),
   connect: () => ipcRenderer.invoke('connect'),
   testOllama: () => ipcRenderer.invoke('ollama:test'),
   analyze: (id) => ipcRenderer.invoke('analyze', id),

@@ -201,8 +201,26 @@ function renderSettings() {
           await window.api.setSettings(settings);
           await window.api.connect();
         },
-      }, 'حفظ وإعادة الاتصال'))
+      }, 'حفظ وإعادة الاتصال')),
+    resetCard(),
   ];
+}
+
+// تصفير البيانات: يحذف الشكاوى (وسجلاتها) فقط، والإعدادات تبقى كما هي
+function resetCard() {
+  const st = h('span', { class: 'small' });
+  return h('div', { class: 'card' },
+    h('h3', {}, '🧹 تصفير البيانات'),
+    h('p', { class: 'small' }, 'يحذف كل شيء نهائياً: الشكاوى وسجلاتها وحسابات الموظفين والكوادر وقوائم الكوادر. الإعدادات فقط (المفاتيح، الأقسام، القواطع، تعليمات التوجيه) تبقى كما هي.'),
+    h('button', {
+      class: 'act',
+      onclick: async () => {
+        if (!(await askConfirm('حذف كل البيانات نهائياً؟\n(الشكاوى + حسابات الموظفين والكوادر)\nلا يمكن التراجع، والإعدادات لا تتأثر.'))) return;
+        st.textContent = '...';
+        const r = await window.api.resetData();
+        st.textContent = r.ok ? '✅ ' + r.message : '❌ ' + r.error;
+      },
+    }, '🗑 تصفير البيانات'), ' ', st);
 }
 
 function branchStats() {

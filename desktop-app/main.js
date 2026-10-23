@@ -579,6 +579,51 @@ ipcMain.handle('staff:delete', async (_, id) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// ---------- تصفير البيانات (بدون الإعدادات) ----------
+// يحذف الشكاوى وسجلاتها فقط. الإعدادات المحلية (المفاتيح، الأقسام، القواطع، التعليمات) لا تُمس إطلاقاً.
+// ويحذف أيضاً حسابات الموظفين والكوادر (من القاعدة ومن نظام الدخول) وقوائم الكوادر.
+async function wipeCollection(name, withLog, onDoc) {
+  let n = 0;
+  for (;;) {
+    const snap = await db.collection(name).limit(200).get();
+    if (snap.empty) break;
+    for (const d of snap.docs) {
+      if (withLog) {
+        const lg = await d.ref.collection('log').get();
+        for (let i = 0; i < lg.docs.length; i += 400) {
+          const b = db.batch();
+          lg.docs.slice(i, i + 400).forEach((x) => b.delete(x.ref));
+          await b.commit();
+        }
+      }
+      if (onDoc) await onDoc(d);
+    }
+    const b = db.batch();
+    snap.docs.forEach((d) => b.delete(d.ref));
+    await b.commit();
+    n += snap.size;
+  }
+  return n;
+}
+ipcMain.handle('data:reset', async () => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    log('⏳ جارٍ تصفير البيانات...');
+    const nc = await wipeCollection('complaints', true);
+    const uids = [];
+    const ns = await wipeCollection('staff', false, async (d) => { uids.push(d.id); });
+    for (let i = 0; i < uids.length; i += 1000) {
+      try { await admin.auth().deleteUsers(uids.slice(i, i + 1000)); } catch (e) { log('تعذّر حذف بعض حسابات الدخول: ' + e.message); }
+    }
+    const nk = await wipeCollection('deptCrews', false);
+    // تنظيف الحالة المحلية حتى لا تتأثر الإشعارات والتحليل بالبيانات المحذوفة
+    lastState.clear(); busy.clear(); failed.clear();
+    const msg = 'تم التصفير: ' + nc + ' شكوى، ' + ns + ' حساب موظف، ' + nk + ' قائمة كوادر (الإعدادات لم تتأثر)';
+    log('🧹 ' + msg);
+    return { ok: true, message: msg };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // عند حذف قاطع: نقل حسابات الكوادر التابعة له إلى «بدون قاطع» (لا تُحذف الحسابات)
 ipcMain.handle('staff:clearSector', async (_, dept, sector) => {
   try {
