@@ -22,6 +22,16 @@ service cloud.firestore {
         && (isDeptStaff() || (isCrew() && myCrew() != '' && c.crew == myCrew()));
     }
 
+    // هل الحي إجباري لهذه الشكوى؟ نعم إذا وُجدت أحياء معرَّفة للنوع المختار (أو لأي قسم إن لم يُختر نوع)
+    function areaRequired(d) {
+      let p = /databases/$(db)/documents/config/areas;
+      return exists(p) && (
+        d.get('category', '') == ''
+          ? get(p).data.get('all', []).size() > 0
+          : get(p).data.get('byDept', {}).get(d.get('category', ''), []).size() > 0);
+    }
+    function hasArea(d) { return d.get('area', '') is string && d.get('area', '').size() > 0; }
+
     // قائمة الأقسام (أنواع الشكاوى) التي يختار منها المواطن؛ يكتبها برنامج الحاسوب فقط
     match /config/{d} {
       allow read: if request.auth != null;
@@ -37,7 +47,8 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.status == 'new'
-        && request.resource.data.department == '';
+        && request.resource.data.department == ''
+        && (!areaRequired(request.resource.data) || hasArea(request.resource.data));
       allow read: if request.auth != null
         && (resource.data.userId == request.auth.uid
             || (isStaff() && canSee(resource.data)));
