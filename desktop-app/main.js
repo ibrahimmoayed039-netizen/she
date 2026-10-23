@@ -247,7 +247,7 @@ async function connect() {
         win.webContents.send('staff', snap.docs.map((d) => {
           const x = d.data();
           const depts = Array.isArray(x.departments) && x.departments.length ? x.departments : (x.department ? [x.department] : []);
-          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x), role: x.role || '', crew: x.crew || '', email: x.email || '', name: x.name || '', disabled: x.disabled === true, sector: x.sector || '' };
+          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x), role: x.role || '', crew: x.crew || '', email: x.email || '', name: x.name || '', disabled: x.disabled === true, sector: x.sector || '', areas: Array.isArray(x.areas) ? x.areas : [] };
         }));
       },
       (e) => log('خطأ في قراءة الموظفين: ' + e.message)
@@ -569,6 +569,38 @@ ipcMain.handle('staff:delete', async (_, id) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// عند حذف قاطع: نقل حسابات الكوادر التابعة له إلى «بدون قاطع» (لا تُحذف الحسابات)
+ipcMain.handle('staff:clearSector', async (_, dept, sector) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    const snap = await db.collection('staff').where('department', '==', String(dept)).where('sector', '==', String(sector)).get();
+    const batch = db.batch();
+    snap.docs.forEach((d) => batch.update(d.ref, { sector: '', areas: [] }));
+    if (!snap.empty) await batch.commit();
+    return { ok: true, count: snap.size };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// تحديد المناطق التي يغطيها حساب كادر (ضمن قاطعه)
+ipcMain.handle('staff:setAreas', async (_, id, areas) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    await db.collection('staff').doc(String(id)).update({ areas: (Array.isArray(areas) ? areas : []).map(String) });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// عند حذف منطقة من قاطع: إزالتها من كل الكوادر التي تغطيها
+ipcMain.handle('staff:removeArea', async (_, dept, sector, area) => {
+  try {
+    if (!db) return { ok: false, error: 'غير متصل بقاعدة البيانات' };
+    const snap = await db.collection('staff').where('department', '==', String(dept)).where('sector', '==', String(sector)).get();
+    const batch = db.batch();
+    snap.docs.forEach((d) => { if ((d.data().areas || []).includes(area)) batch.update(d.ref, { areas: admin.firestore.FieldValue.arrayRemove(area) }); });
+    await batch.commit();
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // تخصيص اسم لحساب (موظف أو كادر) يظهر في السجل والتقارير
 ipcMain.handle('staff:setName', async (_, id, name) => {
   try {
@@ -578,12 +610,12 @@ ipcMain.handle('staff:setName', async (_, id, name) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
-async function createCrewAccount(dept, crew, email, pw, name, sector) {
+async function createCrewAccount(dept, crew, email, pw, name, sector, areas) {
   try {
     const ex = await db.collection('staff').where('role', '==', 'crew').where('department', '==', dept).where('crew', '==', crew).get();
     if (!ex.empty) return { crew, email, ok: false, error: 'يوجد حساب لهذا الكادر في هذا القسم' };
     const u = await admin.auth().createUser({ email, password: pw });
-    await db.collection('staff').doc(u.uid).set({ role: 'crew', department: dept, crew, email, name: name || '', sector: sector || '' });
+    await db.collection('staff').doc(u.uid).set({ role: 'crew', department: dept, crew, email, name: name || '', sector: sector || '', areas: sector && Array.isArray(areas) ? areas : [] });
     log(`تم إنشاء حساب الكادر "${crew}" (${dept})`);
     return { crew, email, ok: true };
   } catch (e) {
@@ -603,7 +635,7 @@ ipcMain.handle('crew:create', async (_, p) => {
   const [local, domain] = email.split('@');
   const results = [];
   for (let i = 1; i <= n; i++) {
-    results.push(await createCrewAccount(dept, n > 1 ? `${crew} ${i}` : crew, n > 1 ? `${local}${i}@${domain}` : email, pw, n > 1 ? '' : String(p.name || '').trim(), String(p.sector || '').trim()));
+    results.push(await createCrewAccount(dept, n > 1 ? `${crew} ${i}` : crew, n > 1 ? `${local}${i}@${domain}` : email, pw, n > 1 ? '' : String(p.name || '').trim(), String(p.sector || '').trim(), (Array.isArray(p.areas) ? p.areas : []).map(String)));
   }
   const bad = results.filter((r) => !r.ok);
   return { ok: bad.length === 0, error: bad.length ? `فشل ${bad.length} من ${n}` : '', results };

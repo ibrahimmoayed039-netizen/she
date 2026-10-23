@@ -194,3 +194,32 @@ details.grp>.card:hover{transform:none}
 .sec-card .x{position:absolute;top:8px;inset-inline-start:10px;color:var(--muted);text-decoration:none;font-size:14px;padding:2px 6px;border-radius:8px}
 .sec-card .x:hover{background:var(--danger-bg);color:var(--danger)}
 .sec-dept{margin:16px 0 0;font-size:14px;font-weight:700;color:var(--muted)}
+
+.sec-del{margin-inline-start:10px;color:#fff;text-decoration:none;font-size:12px;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.2);white-space:nowrap}
+.sec-del:hover{background:var(--danger)}
+.sec-areas{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px 0}
+.sec-areas .area,.sec-card .area{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--info-bg);color:var(--text)}
+.area .ax{color:var(--muted);text-decoration:none;font-size:11px;margin-inline-start:2px}
+.area .ax:hover{color:var(--danger)}
+
+.area-picks{display:flex;flex-wrap:wrap;gap:6px 12px;max-width:520px}
+.area-pick{font-size:13px;display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.area-pick.all{font-weight:700}
+.area-edit{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}
+
+/* ---- صفحة التوزيع: تبويبات فرعية وأقسام منظمة ---- */
+.subtabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;padding:6px;border-radius:16px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--sh-sm),var(--hl)}
+.subtab{flex:1;min-width:150px;padding:10px 14px;border:0;border-radius:12px;background:transparent;color:var(--text);font:inherit;font-size:14px;cursor:pointer;transition:background .15s}
+.subtab:hover{background:var(--surface2)}
+.subtab.on{color:#fff;font-weight:bold;background:linear-gradient(135deg,#3b82f6,#6d5cf6);box-shadow:0 4px 12px rgba(59,130,246,.35)}
+.pills{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 12px}
+.pill{padding:6px 14px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text);font:inherit;font-size:13px;cursor:pointer}
+.pill:hover{background:var(--surface2)}
+.pill.on{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:bold}
+.panel{margin:10px 0;padding:12px 14px;border:1px dashed var(--border);border-radius:14px;background:var(--surface2)}
+.steps{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+.steps span{padding:8px 14px;border-radius:12px;background:var(--info-bg);font-size:13px}
+.area-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border)}
+.area-row:last-child{border-bottom:0}
+.area-row>b{min-width:150px;font-size:13.5px}
+.area-row.miss{background:var(--warn-bg);border-radius:10px}

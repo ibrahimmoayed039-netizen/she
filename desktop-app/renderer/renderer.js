@@ -499,6 +499,7 @@ function accountRow(s, label) {
       nm, h('button', { class: 'act', onclick: () => run(window.api.setStaffName(s.id, nm.value), 'حُفظ الاسم') }, 'حفظ الاسم'),
       pw, h('button', { class: 'act', onclick: () => run(window.api.setStaffPassword(s.id, pw.value), 'تم تغيير كلمة المرور').then((r) => { if (r.ok) pw.value = ''; }) }, 'تغيير كلمة المرور'),
       h('button', { class: 'act', onclick: () => run(window.api.setStaffDisabled(s.id, !s.disabled), s.disabled ? 'تم التفعيل' : 'تم التعطيل') }, s.disabled ? 'تفعيل الحساب' : 'تعطيل الحساب'),
+      ...(s.role === 'crew' && s.sector ? [(() => { let sel = [...(s.areas || [])]; return h('div', { class: 'area-edit' }, h('b', {}, 'المناطق:'), areaPicker(s.departments[0], s.sector, sel, (v) => { sel = v; }), h('button', { class: 'act', onclick: () => run(window.api.setStaffAreas(s.id, sel), 'حُفظت المناطق') }, 'حفظ المناطق')); })()] : []),
       h('button', { class: 'act', onclick: async () => {
         if (!(await askConfirm('حذف هذا الحساب نهائياً؟\n' + label + '\n(لا يحذف الشكاوى السابقة)'))) return;
         await run(window.api.deleteStaff(s.id), 'تم الحذف');
@@ -540,12 +541,48 @@ function deptStaffCard() {
 // ---------------- القواطع (قسم ← قاطع ← مناطق) ----------------
 // مثال: قسم البلدية ← قاطع الكرادة ← (الكرادة داخل، السعدون، ...). تُحفظ في الإعدادات.
 // عنوان مجموعة قاطع: أيقونة + اسم القسم والقاطع + عدد الحسابات، والحسابات داخل إطار واحد
+// اختيار مناطق الكادر من مناطق قاطعه (مربعات اختيار)
+function areaPicker(dept, sector, selected, onChange) {
+  const sec = sectorsOf(dept).find((x) => x.name === sector);
+  if (!sec || !sec.areas.length) return h('span', { class: 'small' }, sector ? 'لا توجد مناطق في هذا القاطع بعد' : 'اختر قاطعاً لتحديد المناطق');
+  const set = new Set(selected);
+  const box = (a) => h('label', { class: 'area-pick' }, h('input', { type: 'checkbox', checked: set.has(a), onchange: (e) => { e.target.checked ? set.add(a) : set.delete(a); onChange([...set]); } }), ' ' + a);
+  return h('div', { class: 'area-picks' },
+    h('label', { class: 'area-pick all' }, h('input', { type: 'checkbox', checked: sec.areas.every((a) => set.has(a)), onchange: (e) => { const on = e.target.checked; e.target.closest('.area-picks').querySelectorAll('input').forEach((i) => { i.checked = on; }); set.clear(); if (on) sec.areas.forEach((a) => set.add(a)); onChange([...set]); } }), ' كل المناطق'),
+    ...sec.areas.map(box));
+}
+// حفظ قائمة القواطع في الإعدادات
+async function saveSectors(list2, okText) {
+  settings = { ...settings, sectors: list2 };
+  await window.api.setSettings(settings);
+  sectorForm.msg = '✅ ' + okText; render();
+}
+// حذف قاطع كامل بمناطقه؛ حسابات الكوادر التابعة له تنتقل إلى «بدون قاطع» ولا تُحذف
+async function deleteSector(dept, name) {
+  const n = staff.filter((s) => s.role === 'crew' && (s.sector || '') === name && s.departments.includes(dept)).length;
+  if (!(await askConfirm('حذف القاطع «' + name + '» ومناطقه من ' + dept + '؟' + (n ? '\nستنتقل ' + n + ' حساب كادر إلى «بدون قاطع».' : '') + '\n(لا يحذف الحسابات ولا الشكاوى)'))) return;
+  if (n) { const r = await window.api.clearSector(dept, name); if (!r.ok) { sectorForm.msg = '❌ ' + r.error; return render(); } }
+  await saveSectors((settings.sectors || []).filter((y) => !(y.dept === dept && y.name === name)), 'تم حذف القاطع');
+}
+// حذف منطقة واحدة من قاطع
+async function removeArea(dept, name, area) {
+  if (!(await askConfirm('حذف المنطقة «' + area + '» من القاطع «' + name + '»؟'))) return;
+  await window.api.removeAreaFromCrews(dept, name, area);
+  await saveSectors((settings.sectors || []).map((y) => (y.dept === dept && y.name === name ? { ...y, areas: y.areas.filter((a) => a !== area) } : y)), 'تم حذف المنطقة');
+}
+// شارة منطقة قابلة للحذف
+const areaChip = (dept, name, a) => h('span', { class: 'area' }, a + (() => { const n = staff.filter((s) => s.role === 'crew' && (s.sector || '') === name && s.departments.includes(dept) && (s.areas || []).includes(a)).length; return n ? ' (' + n + ' كادر)' : ''; })() + ' ',
+  h('a', { href: '#', class: 'ax', title: 'حذف المنطقة', onclick: (e) => { e.preventDefault(); removeArea(dept, name, a); } }, '✖'));
+// عنوان مجموعة قاطع: أيقونة + اسم القسم والقاطع + عدد الحسابات + حذف القاطع، ثم المناطق القابلة للحذف
 function sectorGroup(dept, sc, cards) {
+  const sec = sc ? sectorsOf(dept).find((x) => x.name === sc) : null;
   return h('div', { class: 'sec-group' },
     h('div', { class: 'sec-head' + (sc ? '' : ' none') },
       h('div', { class: 'sec-ico' }, sc ? '🗺' : '📂'),
       h('div', { class: 'sec-title' }, h('b', {}, sc || 'بدون قاطع'), h('small', {}, dept || '-')),
-      h('span', { class: 'sec-count' }, String(cards.length))),
+      h('span', { class: 'sec-count' }, String(cards.length)),
+      sec ? h('a', { href: '#', class: 'sec-del', title: 'حذف القاطع', onclick: (e) => { e.preventDefault(); deleteSector(dept, sc); } }, '🗑 حذف القاطع') : ''),
+    sec ? h('div', { class: 'sec-areas' }, ...(sec.areas.length ? sec.areas.map((a) => areaChip(dept, sc, a)) : [h('span', { class: 'none' }, 'لم تُحدَّد مناطق')])) : '',
     h('div', { class: 'sec-body' }, ...cards));
 }
 let sectorForm = { department: '', name: '', areas: '', msg: '' };
@@ -557,44 +594,93 @@ function sectorOf(c) {
   return hit ? hit.name : '';
 }
 const sectorLabel = (name) => (name ? '🗺 ' + name : 'بدون قاطع');
+// أزرار اختيار القسم (مشتركة بين نظرة عامة والقواطع)
+function deptPills() {
+  const depts = allDepts();
+  if (!sectorForm.department && depts.length) sectorForm.department = depts[0];
+  return h('div', { class: 'pills' }, h('span', { class: 'small' }, 'القسم:'),
+    ...depts.map((d) => h('button', { class: 'pill' + (d === sectorForm.department ? ' on' : ''), onclick: () => { sectorForm.department = d; render(); } }, d)));
+}
 function sectorManager() {
   const depts = allDepts();
   if (!sectorForm.department && depts.length) sectorForm.department = depts[0];
-  const f = sectorForm;
+  const f = sectorForm, d = f.department;
   const msg = h('div', { class: 'small' }, f.msg);
-  const save = async (list2, okText) => {
-    settings = { ...settings, sectors: list2 };
-    await window.api.setSettings(settings);
-    f.msg = '✅ ' + okText; render();
-  };
+  const secs = sectorsOf(d);
+  const crewsIn = (name) => staff.filter((s) => s.role === 'crew' && (s.sector || '') === name && s.departments.includes(d)).length;
   return h('div', { class: 'card' },
-    h('h3', {}, '🗺 قواطع الأقسام'),
-    h('p', { class: 'small' }, 'مثال: القسم «البلدية» ← القاطع «قاطع الكرادة» ← المناطق «الكرادة داخل، السعدون». تُصنَّف الشكوى تلقائياً إلى القاطع إذا ورد اسم القاطع أو إحدى مناطقه في فرعها أو عنوانها أو نصها.'),
-    h('div', { class: 'bar' },
-      field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; render(); })),
-      field('اسم القاطع', h('input', { type: 'text', placeholder: 'مثال: قاطع الكرادة', value: f.name, oninput: (e) => { f.name = e.target.value; } })),
-      field('المناطق (افصل بفاصلة)', h('input', { type: 'text', placeholder: 'منطقة 1، منطقة 2', value: f.areas, oninput: (e) => { f.areas = e.target.value; } })),
-      h('button', { class: 'act', onclick: async () => {
-        const name = f.name.trim(), areas = f.areas.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
-        if (!name) { f.msg = 'اكتب اسم القاطع'; return render(); }
-        const rest = (settings.sectors || []).filter((x) => !(x.dept === f.department && x.name === name));
-        const old = (settings.sectors || []).find((x) => x.dept === f.department && x.name === name);
-        f.name = ''; f.areas = '';
-        await save([...rest, { dept: f.department, name, areas: [...new Set([...(old ? old.areas : []), ...areas])] }], 'تم حفظ القاطع');
-      } }, 'إضافة / تحديث')),
+    h('h3', {}, '🗺 القواطع والمناطق'),
+    deptPills(),
+    h('div', { class: 'panel' },
+      h('b', {}, '➕ إضافة قاطع إلى «' + (d || '-') + '»'),
+      h('div', { class: 'bar' },
+        field('اسم القاطع', h('input', { type: 'text', placeholder: 'مثال: قاطع الكرادة', value: f.name, oninput: (e) => { f.name = e.target.value; } })),
+        field('المناطق (افصل بفاصلة)', h('input', { type: 'text', placeholder: 'منطقة 1، منطقة 2', value: f.areas, oninput: (e) => { f.areas = e.target.value; } })),
+        h('button', { class: 'act', onclick: async () => {
+          const name = f.name.trim(), areas = f.areas.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
+          if (!name) { f.msg = 'اكتب اسم القاطع'; return render(); }
+          const rest = (settings.sectors || []).filter((x) => !(x.dept === d && x.name === name));
+          const old = (settings.sectors || []).find((x) => x.dept === d && x.name === name);
+          f.name = ''; f.areas = '';
+          await saveSectors([...rest, { dept: d, name, areas: [...new Set([...(old ? old.areas : []), ...areas])] }], 'تم حفظ القاطع');
+        } }, 'إضافة / تحديث')),
+      h('p', { class: 'small' }, 'إذا كان القاطع موجوداً تُضاف المناطق الجديدة إلى مناطقه. تُصنَّف الشكوى تلقائياً إلى القاطع إذا ورد اسمه أو إحدى مناطقه في فرعها أو عنوانها أو نصها.')),
     msg,
-    ...depts.flatMap((d) => {
-      const secs = sectorsOf(d);
-      return secs.length ? [h('div', { class: 'sec-dept' }, d), h('div', { class: 'sec-grid' },
-        ...secs.map((x) => h('div', { class: 'sec-card' },
-          h('b', {}, '🗺 ' + x.name),
-          h('div', { class: 'areas' }, ...(x.areas.length ? x.areas.map((a) => h('span', { class: 'area' }, a)) : [h('span', { class: 'none' }, 'لم تُحدَّد مناطق')])),
-          h('a', { class: 'x', href: '#', title: 'حذف القاطع', onclick: async (e) => {
-            e.preventDefault();
-            if (!(await askConfirm('حذف القاطع «' + x.name + '» من ' + d + '؟ (لا يحذف الحسابات ولا الشكاوى)'))) return;
-            await save((settings.sectors || []).filter((y) => y !== x && !(y.dept === d && y.name === x.name)), 'تم حذف القاطع');
-          } }, '✖'))))] : [];
-    }));
+    secs.length ? h('div', { class: 'sec-grid' },
+      ...secs.map((x) => h('div', { class: 'sec-card' },
+        h('b', {}, '🗺 ' + x.name),
+        h('div', { class: 'small' }, x.areas.length + ' منطقة • ' + crewsIn(x.name) + ' كادر'),
+        h('div', { class: 'areas' }, ...(x.areas.length ? x.areas.map((a) => areaChip(d, x.name, a)) : [h('span', { class: 'none' }, 'لم تُحدَّد مناطق')])),
+        h('a', { class: 'x', href: '#', title: 'حذف القاطع', onclick: (e) => { e.preventDefault(); deleteSector(d, x.name); } }, '✖'))))
+      : h('div', { class: 'empty' }, 'لا توجد قواطع في هذا القسم بعد — أضف أول قاطع من النموذج أعلاه'));
+}
+
+// ---------------- نظرة عامة: قسم ← قاطع ← مناطق ← كوادر ----------------
+function overviewPanel() {
+  const d = sectorForm.department;
+  if (!d) return h('div', { class: 'empty' }, 'لا توجد أقسام بعد');
+  const crews = staff.filter((s) => s.role === 'crew' && s.departments.includes(d));
+  const secs = sectorsOf(d);
+  const coverOf = (inSec, a) => inSec.filter((s) => (s.areas || []).includes(a));
+  const allAreas = secs.reduce((n, x) => n + x.areas.length, 0);
+  const uncovered = secs.reduce((n, x) => n + x.areas.filter((a) => !coverOf(crews.filter((s) => (s.sector || '') === x.name), a).length).length, 0);
+  const loose = crews.filter((s) => !s.sector || !secs.some((x) => x.name === s.sector));
+  const chip = (s) => h('span', { class: 'chip' + (s.disabled ? ' warn' : '') }, '🚧 ' + s.crew + (s.name ? ' (' + s.name + ')' : ''));
+  const steps = h('div', { class: 'steps' },
+    h('span', {}, '① أضف القواطع ومناطقها'), h('span', {}, '② أنشئ حسابات الكوادر داخل القاطع'), h('span', {}, '③ حدّد المناطق التي يغطيها كل كادر'));
+  const kpi = h('div', { class: 'sum' },
+    h('span', { class: 'chip' }, '🗺 قواطع: ' + secs.length),
+    h('span', { class: 'chip' }, '📍 مناطق: ' + allAreas),
+    h('span', { class: 'chip' }, '🚧 كوادر: ' + crews.length),
+    h('span', { class: 'chip ' + (uncovered ? 'warn' : 'ok') }, uncovered ? '⚠ مناطق بلا كادر: ' + uncovered : '✅ كل المناطق مغطاة'));
+  const blocks = secs.map((x) => {
+    const inSec = crews.filter((s) => (s.sector || '') === x.name);
+    const noArea = inSec.filter((s) => !(s.areas || []).length);
+    return h('div', { class: 'sec-group' },
+      h('div', { class: 'sec-head' }, h('div', { class: 'sec-ico' }, '🗺'),
+        h('div', { class: 'sec-title' }, h('b', {}, x.name), h('small', {}, d)),
+        h('span', { class: 'sec-count' }, inSec.length + ' كادر')),
+      h('div', { class: 'sec-body' },
+        ...x.areas.map((a) => { const c = coverOf(inSec, a); return h('div', { class: 'area-row' + (c.length ? '' : ' miss') }, h('b', {}, '📍 ' + a), h('div', {}, ...(c.length ? c.map(chip) : [h('span', { class: 'small' }, '⚠ لا يوجد كادر يغطي هذه المنطقة')]))); }),
+        !x.areas.length ? h('p', { class: 'small' }, 'لم تُحدَّد مناطق لهذا القاطع') : '',
+        noArea.length ? h('div', { class: 'area-row' }, h('b', {}, '🧩 كوادر القاطع دون تحديد مناطق'), h('div', {}, ...noArea.map(chip))) : ''));
+  });
+  return h('div', {}, deptPills(), kpi,
+    secs.length ? '' : steps,
+    ...blocks,
+    loose.length ? h('div', { class: 'sec-group' },
+      h('div', { class: 'sec-head none' }, h('div', { class: 'sec-ico' }, '📂'), h('div', { class: 'sec-title' }, h('b', {}, 'بدون قاطع'), h('small', {}, d)), h('span', { class: 'sec-count' }, loose.length + ' كادر')),
+      h('div', { class: 'sec-body' }, h('div', { class: 'area-row' }, h('div', {}, ...loose.map(chip))))) : '',
+    !secs.length && !loose.length ? h('div', { class: 'empty' }, 'لا توجد قواطع ولا كوادر في هذا القسم بعد') : '');
+}
+
+// ---------------- صفحة التوزيع والإعداد (تبويبات فرعية) ----------------
+let setupTab = 'overview';
+const SETUP_TABS = [['overview', '🧭 نظرة عامة'], ['sectors', '🗺 القواطع والمناطق'], ['crews', '🚧 الكوادر وحساباتهم'], ['staff', '👥 موظفو الأقسام']];
+function renderSetup() {
+  const bar = h('div', { class: 'subtabs' }, ...SETUP_TABS.map(([k, l]) => h('button', { class: 'subtab' + (k === setupTab ? ' on' : ''), onclick: () => { setupTab = k; render(); } }, l)));
+  const body = setupTab === 'overview' ? [overviewPanel()] : setupTab === 'sectors' ? [sectorManager()] : setupTab === 'crews' ? [crewManager(), crewAccounts()] : [deptStaffCard()];
+  return [bar, ...body];
 }
 function crewManager() {
   const depts = allDepts();
@@ -635,7 +721,7 @@ function crewManager() {
 }
 
 // ---------------- حسابات الكوادر ----------------
-let crewForm = { department: '', sector: '', crew: '', name: '', email: '', password: '', count: '1', msg: '', results: [] };
+let crewForm = { department: '', sector: '', areas: [], crew: '', name: '', email: '', password: '', count: '1', msg: '', results: [] };
 // اسم المسؤول عن الكادر (من حساب الكادر) لعرضه بجانب اسم الكادر
 function crewLabel(c) {
   if (!c.crew) return '';
@@ -652,8 +738,9 @@ function crewAccounts() {
     h('h3', {}, '➕ إنشاء حساب كادر ميداني'),
     h('p', { class: 'small' }, 'يرى حساب الكادر شكاواه المُسندة إليه فقط، ويضغط «وصلت إلى الموقع» ثم يرسل الإنجاز.'),
     h('div', { class: 'bar' },
-      field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; crewForm.sector = ''; render(); })),
-      field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(crewForm.department).map((x) => [x.name, x.name])], crewForm.sector, (v) => { crewForm.sector = v; })),
+      field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; crewForm.sector = ''; crewForm.areas = []; render(); })),
+      field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(crewForm.department).map((x) => [x.name, x.name])], crewForm.sector, (v) => { crewForm.sector = v; crewForm.areas = []; render(); })),
+      field('المناطق التي يغطيها', areaPicker(crewForm.department, crewForm.sector, crewForm.areas, (v) => { crewForm.areas = v; })),
       field('اسم الكادر', inp('crew', 'مثال: كادر')),
       field('اسم المسؤول (اختياري)', inp('name', 'مثال: أحمد علي')),
       field('عدد الكوادر', h('input', { type: 'number', min: '1', max: '30', value: crewForm.count, oninput: (e) => { crewForm.count = e.target.value; } })),
@@ -664,7 +751,7 @@ function crewAccounts() {
         const r = await window.api.createCrew({ ...crewForm });
         crewForm.msg = r.ok ? '✅ تم إنشاء ' + r.results.length + ' حساب' : '❌ ' + r.error;
         crewForm.results = r.results || [];
-        if (r.ok) { crewForm.crew = ''; crewForm.name = ''; crewForm.email = ''; crewForm.password = ''; crewForm.count = '1'; }
+        if (r.ok) { crewForm.crew = ''; crewForm.name = ''; crewForm.email = ''; crewForm.password = ''; crewForm.count = '1'; crewForm.areas = []; }
         render();
       } }, 'إنشاء')),
     h('p', { class: 'small' }, 'عند اختيار عدد أكبر من 1 يُرقَّم الاسم والبريد تلقائياً: «كادر» + 3 ← كادر 1، كادر 2، كادر 3 (crew1@، crew2@، crew3@ بنفس الدومين وكلمة المرور).'),
@@ -674,7 +761,7 @@ function crewAccounts() {
       ...[...new Set(accounts.map((s) => (s.departments[0] || '') + '\u0001' + (s.sector || '')))].sort().map((key) => {
         const [d, sc] = key.split('\u0001');
         return sectorGroup(d, sc, accounts.filter((s) => (s.departments[0] || '') === d && (s.sector || '') === sc)
-          .map((s) => accountRow(s, '🚧 ' + s.crew + (s.email ? ' • ' + s.email : ''))));
+          .map((s) => accountRow(s, '🚧 ' + s.crew + (s.email ? ' • ' + s.email : '') + (s.areas && s.areas.length ? ' • المناطق: ' + s.areas.join('، ') : ''))));
       })) : '');
 }
 
@@ -781,9 +868,9 @@ function renderPerf() {
 
 function renderBusy() {
   const stats = crewStats();
-  if (!stats.length) return [crewManager(), sectorManager(), crewAccounts(), deptStaffCard(), h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد: أضف أسماءها من «كوادر الأقسام» أعلاه')];
+  if (!stats.length) return [h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد: أضفها من صفحة «توزيع الكوادر والقواطع»')];
   const now = Date.now();
-  const out = [crewManager(), sectorManager(), crewAccounts(), deptStaffCard()];
+  const out = [];
   let totalBusy = 0, totalFree = 0;
   const blocks = stats.map((d) => {
     const busy = [], free = [];
@@ -914,6 +1001,7 @@ function render() {
   updateChrome();
   if (tab === 'settings') return v.append(...renderSettings());
   if (tab === 'report') return v.append(...renderReport());
+  if (tab === 'setup') return v.append(...renderSetup());
   if (tab === 'crews') return v.append(...renderBusy());
   if (tab === 'perf') return v.append(...renderPerf());
   if (tab === 'classify') return v.append(...renderClassify());
@@ -932,8 +1020,8 @@ function render() {
 document.getElementById('view').addEventListener('click', (e) => { if (e.target.tagName === 'IMG' && e.target.src) zoom(e.target.src); });
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
 window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
-window.api.onDeptCrews((d) => { deptCrews = d; if (tab === 'crews' || tab === 'perf') render(); });
-window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews' || tab === 'perf') render(); });
+window.api.onDeptCrews((d) => { deptCrews = d; if (tab === 'crews' || tab === 'perf' || tab === 'setup') render(); });
+window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews' || tab === 'perf' || tab === 'setup') render(); });
 setInterval(() => { if (tab === 'crews') render(); }, 60000);
 window.api.onLog((m) => { document.getElementById('log').textContent = m; });
 window.api.getSettings().then((s) => { settings = s; render(); });
