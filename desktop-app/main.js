@@ -20,6 +20,7 @@ const store = new Store({
 });
 
 let win, db, unsub = null, unsubStaff = null, unsubDC = null;
+const tms = (t) => (t ? t.toMillis() : 0);
 const busy = new Set();
 const failed = new Set();
 
@@ -160,6 +161,9 @@ async function connect() {
             category: x.category || '', aiDepartment: x.aiDepartment || '',
             materialsReady: x.materialsReady === true, materialsReadyMs: x.materialsReadyAt ? x.materialsReadyAt.toMillis() : 0,
             arrivedMs: x.arrivedAt ? x.arrivedAt.toMillis() : 0,
+            submittedMs: tms(x.submittedAt), approvedMs: tms(x.approvedAt), returnNote: x.returnNote || '', returnedMs: tms(x.returnedAt),
+            blockedReason: x.blockedReason || '', blockedBy: x.blockedBy || '', blockedMs: tms(x.blockedAt),
+            materialsStatus: x.materialsStatus || '', materialsNote: x.materialsNote || '', materialsReceivedMs: tms(x.materialsReceivedAt),
             lat: typeof x.lat === 'number' ? x.lat : null, lng: typeof x.lng === 'number' ? x.lng : null,
             afterImageB64: x.afterImageB64 || '', rating: typeof x.rating === 'number' ? x.rating : 0,
             dupTitle: x.dupTitle || '', dupCount: x.dupCount || 0,
@@ -171,6 +175,7 @@ async function connect() {
           const x = doc.data(), prev = lastState.get(doc.id);
           if (seeded && prev && x.status === 'resolved' && prev.status !== 'resolved') log(`✅ أُنجز العمل: "${x.title || ''}"` + (x.crew ? ' (الكادر: ' + x.crew + ')' : ''));
           const reopenedNow = (x.reopenCount || 0) > (prev ? prev.reopen || 0 : 0);
+          const blockedNow = !!prev && tms(x.blockedAt) > (prev.blocked || 0);
           if (seeded && prev && reopenedNow) {
             const why = x.reopenReason ? ' — السبب: ' + x.reopenReason : '';
             log(`🔁 أعاد المواطن فتح الشكوى "${x.title || ''}"` + why);
@@ -193,17 +198,44 @@ async function connect() {
             notifyCrew(x.department, x.crew, '📦 المواد جاهزة', x.title || '');
           }
           if (seeded && prev) {
+            // (1) الكادر أرسل الإنجاز: بانتظار اعتماد القسم
+            if (x.status === 'pending_review' && prev.status !== 'pending_review') {
+              log(`🔎 أرسل الكادر إنجاز \"${x.title || ''}\" بانتظار الاعتماد`);
+              desk('🔎 إنجاز بانتظار الاعتماد: ' + (x.title || ''), x.reply || '');
+              if (x.department) notifyTopic(x.department, '🔎 إنجاز بانتظار اعتمادك', x.title || '');
+            }
+            // القسم أرجع العمل للكادر
+            if (tms(x.returnedAt) > (prev.returned || 0) && x.crew && x.department) {
+              log(`↩️ أُرجع العمل للكادر في \"${x.title || ''}\": ${x.returnNote || ''}`);
+              notifyCrew(x.department, x.crew, '↩️ أُعيد إليك العمل', (x.title || '') + (x.returnNote ? ' — ' + x.returnNote : ''));
+            }
+            // (3) تعذّر العمل على الكادر: تعود للقسم
+            if (blockedNow) {
+              const why = (x.blockedBy ? 'الكادر ' + x.blockedBy + ': ' : '') + (x.blockedReason || '');
+              log(`🚫 تعذّر العمل في \"${x.title || ''}\" — ${why}`);
+              desk('🚫 تعذّر العمل: ' + (x.title || ''), why);
+              if (x.department) notifyTopic(x.department, '🚫 تعذّر العمل: ' + (x.title || ''), why);
+            }
+            // (2) دورة المواد
+            const msNow = x.materialsStatus || '';
+            if (msNow !== (prev.matStatus || '')) {
+              if (msNow === 'partial' && x.crew && x.department) notifyCrew(x.department, x.crew, '⚠️ نقص جزئي في المواد', (x.title || '') + (x.materialsNote ? ' — الناقص: ' + x.materialsNote : ''));
+              if (msNow === 'received') log(`📥 استلم الكادر المواد في \"${x.title || ''}\"`);
+            }
+          }
+          if (seeded && prev) {
             // تكليف كادر بشكوى: إشعار لحساب الكادر
             if (x.crew && x.crew !== prev.crew && x.department) notifyCrew(x.department, x.crew, 'كُلِّفتم بشكوى جديدة', x.title || '');
             if (x.fcmToken) {
               const arrivedNow = x.arrivedAt && !prev.arrived;
               if (reopenedNow) notifyToken(x.fcmToken, 'تم استلام طلبك', 'أُعيد فتح شكواك وأُحيلت إلى القسم مجدداً');
+              else if (blockedNow) { /* لا إشعار للمواطن: الشكوى تعود للقسم داخلياً */ }
               else if (arrivedNow) notifyToken(x.fcmToken, 'وصل كادر الصيانة', 'وصل كادر الصيانة إلى موقع شكواك' + (x.crew ? ' (' + x.crew + ')' : ''));
               else if (x.status !== prev.status && PUSH_TEXT[x.status]) { const [t, b] = PUSH_TEXT[x.status](x); notifyToken(x.fcmToken, t, b); }
               else if (x.crew && x.crew !== prev.crew) notifyToken(x.fcmToken, 'تم إسناد شكواك', 'أُسندت شكواك إلى كادر الصيانة: ' + x.crew);
             }
           }
-          lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt, reopen: x.reopenCount || 0, assessed: x.assessedAt ? x.assessedAt.toMillis() : 0, matReady: x.materialsReady === true });
+          lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt, reopen: x.reopenCount || 0, assessed: x.assessedAt ? x.assessedAt.toMillis() : 0, matReady: x.materialsReady === true, blocked: tms(x.blockedAt), returned: tms(x.returnedAt), matStatus: x.materialsStatus || '' });
         });
         seeded = true;
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
@@ -415,9 +447,42 @@ ipcMain.handle('connect', () => connect());
 ipcMain.handle('materials:ready', async (_, id) => {
   try {
     await db.collection('complaints').doc(String(id)).update({
-      materialsReady: true, materialsReadyAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      materialsReady: true, materialsStatus: 'ready', materialsNote: '', materialsReadyAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     addLog(id, 'المدير', 'جُهِّزت المواد المطلوبة');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// (2) حالة المواد من المدير: preparing | partial (مع الناقص)
+ipcMain.handle('materials:status', async (_, id, status, note) => {
+  try {
+    if (!['preparing', 'partial'].includes(status)) return { ok: false, error: 'حالة غير صالحة' };
+    await db.collection('complaints').doc(String(id)).update({
+      materialsReady: false, materialsStatus: status, materialsNote: String(note || '').trim(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    addLog(id, 'المدير', status === 'partial' ? 'نقص جزئي في المواد — الناقص: ' + String(note || '').trim() : 'المواد قيد التجهيز');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// (1) اعتماد إنجاز الكادر أو إرجاعه
+ipcMain.handle('review:approve', async (_, id) => {
+  try {
+    const ref = db.collection('complaints').doc(String(id));
+    const d = (await ref.get()).data();
+    if (!d || d.status !== 'pending_review') return { ok: false, error: 'الشكوى ليست بانتظار الاعتماد' };
+    await ref.update({ status: 'resolved', approvedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    addLog(id, 'المدير', 'اعتمد الإنجاز وأُرسل للمواطن');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('review:return', async (_, id, note) => {
+  try {
+    const ref = db.collection('complaints').doc(String(id));
+    const d = (await ref.get()).data();
+    if (!d || d.status !== 'pending_review') return { ok: false, error: 'الشكوى ليست بانتظار الاعتماد' };
+    note = String(note || '').trim();
+    await ref.update({ status: 'in_progress', returnNote: note, returnedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    addLog(id, 'المدير', 'أرجع الإنجاز للكادر — ' + note);
     return { ok: true };
   } catch (e) { return { ok: false, error: e.message }; }
 });

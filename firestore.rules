@@ -43,10 +43,19 @@ service cloud.firestore {
             || (isStaff() && canSee(resource.data)));
       // موظف القسم: الحالة والرد والتقرير والكادر وصورة ما بعد الصيانة
       allow update: if isDeptStaff() && resource.data.department in myDepts()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt', 'materialsReady', 'materialsReadyAt']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'crew', 'crewAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt', 'materialsReady', 'materialsReadyAt', 'materialsStatus', 'materialsNote', 'submittedAt', 'approvedAt', 'returnNote', 'returnedAt', 'blockedReason', 'blockedBy', 'blockedAt']);
       // الكادر الميداني: شكاواه المُسندة إليه فقط، ولا يستطيع تغيير الكادر
+      // (v33) الكادر لا يستطيع إنهاء الشكوى: يرسل الإنجاز «بانتظار اعتماد القسم» (pending_review) فقط
       allow update: if isCrew() && canSee(resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt']);
+        && request.resource.data.status in ['routed', 'in_progress', 'pending_review']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reply', 'updatedAt', 'branch', 'repairable', 'materials', 'assessedAt', 'afterImageB64', 'afterAt', 'startedAt', 'resolvedAt', 'arrivedAt', 'submittedAt', 'returnNote', 'materialsStatus', 'materialsReceivedAt'])
+        && (!('returnNote' in request.resource.data.diff(resource.data).affectedKeys()) || request.resource.data.returnNote == '')
+        && (!('materialsStatus' in request.resource.data.diff(resource.data).affectedKeys()) || request.resource.data.materialsStatus == 'received');
+      // (v33) «تعذّر العمل»: يُخلي الكادر الشكوى ويعيدها للقسم مع السبب
+      allow update: if isCrew() && canSee(resource.data)
+        && request.resource.data.status == 'routed'
+        && request.resource.data.get('crew', '') == ''
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'crew', 'blockedReason', 'blockedBy', 'blockedAt', 'arrivedAt', 'updatedAt']);
       // المواطن: تقييم شكواه مرة واحدة بعد «تم الحل»
       allow update: if request.auth != null
         && resource.data.userId == request.auth.uid

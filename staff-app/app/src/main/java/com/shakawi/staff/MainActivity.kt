@@ -52,7 +52,9 @@ data class Complaint(
     val lat: Double?, val lng: Double?, val afterB64: String, val dupTitle: String,
     val dupCount: Long, val rating: Long, val arrivedMs: Long,
     val reopenCount: Long, val reopenReason: String, val confirmed: Boolean,
-    val materialsReady: Boolean, val assessedMs: Long
+    val materialsReady: Boolean, val assessedMs: Long,
+    val materialsStatus: String, val materialsNote: String, val returnNote: String,
+    val blockedReason: String, val blockedBy: String
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -68,7 +70,9 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("dupTitle") ?: "", d.getLong("dupCount") ?: 0L, d.getLong("rating") ?: 0L,
     d.getTimestamp("arrivedAt")?.toDate()?.time ?: 0L,
     d.getLong("reopenCount") ?: 0L, d.getString("reopenReason") ?: "", d.getBoolean("confirmed") ?: false,
-    d.getBoolean("materialsReady") ?: false, d.getTimestamp("assessedAt")?.toDate()?.time ?: 0L
+    d.getBoolean("materialsReady") ?: false, d.getTimestamp("assessedAt")?.toDate()?.time ?: 0L,
+    d.getString("materialsStatus") ?: "", d.getString("materialsNote") ?: "", d.getString("returnNote") ?: "",
+    d.getString("blockedReason") ?: "", d.getString("blockedBy") ?: ""
 )
 
 fun priorityAr(p: String): String = when (p) {
@@ -89,16 +93,34 @@ fun logEvent(id: String, action: String) {
         .add(mapOf("by" to by, "action" to action, "at" to FieldValue.serverTimestamp()))
 }
 
-/** شريط مراحل الشكوى: استُلمت › وُجِّهت › أُسندت › الكشف › المواد › الإنجاز */
+/** حالة المواد: requested › preparing › partial › ready › received */
+fun matStatus(c: Complaint): String = when {
+    c.materialsStatus.isNotBlank() -> c.materialsStatus
+    c.materialsReady -> "ready"
+    else -> "requested"
+}
+
+fun matStatusAr(s: String) = when (s) {
+    "preparing" -> "⏳ قيد التجهيز"
+    "partial" -> "⚠️ نقص جزئي"
+    "ready" -> "✅ جاهزة بانتظار استلام الكادر"
+    "received" -> "✅ استلمها الكادر"
+    else -> "📦 مطلوبة بانتظار التجهيز"
+}
+
+/** شريط مراحل الشكوى: استُلمت › وُجِّهت › أُسندت › الكشف › المواد › الإنجاز › الاعتماد */
 fun stageLine(c: Complaint): String {
+    val fin = c.status == "resolved"
+    val sent = fin || c.status == "pending_review"
     val steps = mutableListOf<Pair<String, Boolean>>()
     steps += "استُلمت" to true
     steps += "وُجِّهت" to (c.status != "new")
     steps += "أُسندت" to c.crew.isNotBlank()
-    steps += "الكشف" to (c.arrivedMs > 0 || c.assessedMs > 0 || c.status == "resolved")
+    steps += "الكشف" to (c.arrivedMs > 0 || c.assessedMs > 0 || sent)
     if (c.repairable == false) steps += "🚫 غير ممكن الصيانة" to false
-    else if (c.repairable == true && c.materials.isNotBlank()) steps += "المواد" to (c.materialsReady || c.status == "resolved")
-    steps += "الإنجاز" to (c.status == "resolved")
+    else if (c.repairable == true && c.materials.isNotBlank()) steps += "المواد" to (matStatus(c) == "ready" || matStatus(c) == "received" || sent)
+    steps += "الإنجاز" to sent
+    if (c.crew.isNotBlank() || sent) steps += "اعتماد القسم" to fin
     val cur = steps.indexOfFirst { !it.second }
     return steps.mapIndexed { i, s -> (if (s.second) "✔ " else if (i == cur) "⏳ " else "○ ") + s.first }.joinToString(" › ")
 }
@@ -107,8 +129,58 @@ fun stageLine(c: Complaint): String {
 fun markMaterialsReady(id: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
-        .update(mapOf("materialsReady" to true, "materialsReadyAt" to ts, "updatedAt" to ts))
+        .update(mapOf("materialsReady" to true, "materialsStatus" to "ready", "materialsNote" to "", "materialsReadyAt" to ts, "updatedAt" to ts))
     logEvent(id, "جُهِّزت المواد المطلوبة")
+}
+
+/** قيد التجهيز أو نقص جزئي (مع ذكر الناقص) */
+fun setMaterialsStatus(id: String, status: String, note: String) {
+    val ts = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("materialsReady" to false, "materialsStatus" to status, "materialsNote" to note, "updatedAt" to ts))
+    logEvent(id, if (status == "partial") "نقص جزئي في المواد — الناقص: $note" else "المواد قيد التجهيز")
+}
+
+/** الكادر يؤكد استلام المواد */
+fun markMaterialsReceived(id: String, crew: String) {
+    val ts = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("materialsStatus" to "received", "materialsReceivedAt" to ts, "updatedAt" to ts))
+    logEvent(id, "استلم الكادر $crew المواد")
+}
+
+/** القسم يعتمد إنجاز الكادر فيصل المواطن */
+fun approveCompletion(id: String) {
+    val ts = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("status" to "resolved", "approvedAt" to ts, "updatedAt" to ts))
+    logEvent(id, "اعتمد القسم الإنجاز وأُرسل للمواطن")
+}
+
+/** القسم يعيد العمل للكادر مع ملاحظة */
+fun returnToCrew(id: String, note: String) {
+    val ts = FieldValue.serverTimestamp()
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("status" to "in_progress", "returnNote" to note, "returnedAt" to ts, "updatedAt" to ts))
+    logEvent(id, "أرجع الإنجاز للكادر — $note")
+}
+
+/** تعذّر العمل: يُخلي الكادر الشكوى فتعود للقسم مع السبب (دفعة واحدة مع السجل) */
+fun blockWork(id: String, crew: String, reason: String, onResult: (String?) -> Unit) {
+    val db = FirebaseFirestore.getInstance()
+    val ref = db.collection("complaints").document(id)
+    val ts = FieldValue.serverTimestamp()
+    val batch = db.batch()
+    batch.update(ref, mapOf(
+        "status" to "routed", "crew" to "", "blockedReason" to reason, "blockedBy" to crew,
+        "blockedAt" to ts, "arrivedAt" to FieldValue.delete(), "updatedAt" to ts
+    ))
+    batch.set(ref.collection("log").document(), mapOf(
+        "by" to myDisplayName.ifBlank { crew },
+        "action" to "تعذّر العمل على الكادر $crew — السبب: $reason — وأُعيدت للقسم",
+        "at" to ts
+    ))
+    batch.commit().addOnSuccessListener { onResult(null) }.addOnFailureListener { e -> onResult(e.message ?: "خطأ غير معروف") }
 }
 
 /** الأكثر إلحاحاً أولاً */
@@ -170,12 +242,14 @@ fun compressImage(ctx: Context, uri: Uri): String {
 }
 
 /** إنجاز العمل: يُنهي الشكوى ويُرسل الرد وصورة بعد الصيانة للمواطن والمدير دفعة واحدة */
-fun completeWork(id: String, reply: String, afterB64: String, onResult: (String?) -> Unit) {
+fun completeWork(id: String, reply: String, afterB64: String, crewMode: Boolean, onResult: (String?) -> Unit) {
     val ts = FieldValue.serverTimestamp()
-    val m = mutableMapOf<String, Any>("status" to "resolved", "reply" to reply, "resolvedAt" to ts, "updatedAt" to ts)
+    // الكادر يرسل الإنجاز لاعتماد القسم؛ موظف القسم ينهيها مباشرة
+    val m = mutableMapOf<String, Any>("status" to (if (crewMode) "pending_review" else "resolved"), "reply" to reply, "resolvedAt" to ts, "updatedAt" to ts)
+    if (crewMode) { m["submittedAt"] = ts; m["returnNote"] = "" }
     if (afterB64.isNotEmpty()) { m["afterImageB64"] = afterB64; m["afterAt"] = ts }
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
-        .addOnSuccessListener { logEvent(id, "أنجز العمل وأرسله للمواطن والمدير — $reply"); onResult(null) }
+        .addOnSuccessListener { logEvent(id, (if (crewMode) "أنجز العمل وأرسله لاعتماد القسم — " else "أنجز العمل وأرسله للمواطن والمدير — ") + reply); onResult(null) }
         .addOnFailureListener { e ->
             val msg = e.message ?: "خطأ غير معروف"
             onResult(if (msg.contains("PERMISSION_DENIED")) "رُفض الإرسال من الخادم: انشر قواعد Firestore الأحدث (Rules ← Publish) ثم أعد المحاولة"
@@ -227,7 +301,8 @@ fun readBranches(doc: DocumentSnapshot): List<String> {
 /** إسناد الشكوى إلى كادر صيانة ميداني؛ إن كانت جديدة تصبح «قيد المعالجة» */
 fun assignCrew(id: String, crew: String, status: String) {
     val m = mutableMapOf<String, Any>(
-        "crew" to crew, "crewAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp()
+        "crew" to crew, "crewAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp(),
+        "blockedReason" to ""
     )
     if (status == "routed") m["status"] = "in_progress"
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
@@ -390,23 +465,23 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
         onDispose { regs.forEach { it.remove() } }
     }
 
-    val statuses = listOf("routed", "in_progress", "resolved")
-    val labels = listOf("📥" to "الجديدة", "🔧" to "قيد المعالجة", "✅" to "المنجزة", "👤" to "حسابي")
+    val statuses = listOf("routed", "in_progress", "pending_review", "resolved")
+    val labels = listOf("📥" to "الجديدة", "🔧" to "قيد المعالجة", "🔎" to "للاعتماد", "✅" to "المنجزة", "👤" to "حسابي")
 
     Scaffold(bottomBar = {
         NavigationBar {
             labels.forEachIndexed { i, t ->
-                val n = if (i < 3) list.count { it.status == statuses[i] } else 0
+                val n = if (i < 4) list.count { it.status == statuses[i] } else 0
                 NavigationBarItem(
                     selected = tab == i, onClick = { tab = i },
                     icon = { Text(t.first) },
-                    label = { Text(if (i < 3) "${t.second} ($n)" else t.second) }
+                    label = { Text(if (i < 4) "${t.second} ($n)" else t.second) }
                 )
             }
         }
     }) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
-            if (tab < 3) {
+            if (tab < 4) {
                 val shown = list.filter { it.status == statuses[tab] }
                 if (shown.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(24.dp)) {
@@ -428,8 +503,10 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                                     color = if (c.priority == "urgent") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                                 if (c.reopenCount > 0 && c.status != "resolved") Text("🔁 أعاد المواطن فتحها (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — " + c.reopenReason else ""), color = MaterialTheme.colorScheme.error)
                                 if (c.crew.isNotBlank()) Text("🚧 الكادر: " + c.crew)
+                                if (c.returnNote.isNotBlank() && c.status == "in_progress") Text("↩️ أُعيد من القسم: " + c.returnNote, color = MaterialTheme.colorScheme.error)
+                                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Text("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason, color = MaterialTheme.colorScheme.error)
                                 Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
-                                if (c.repairable == true && c.materials.isNotBlank() && !c.materialsReady && c.status != "resolved") Text("📦 مواد مطلوبة بانتظار التجهيز", color = MaterialTheme.colorScheme.error)
+                                if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved" && c.status != "pending_review" && matStatus(c) != "received") Text("📦 المواد: " + matStatusAr(matStatus(c)), color = if (matStatus(c) == "ready") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                                 if (c.dupTitle.isNotBlank()) Text("🔁 مكررة: يوجد بلاغ سابق مماثل", color = MaterialTheme.colorScheme.error)
                                 if (c.dupCount > 0) Text("🔁 تكررت " + c.dupCount + " مرة")
                                 if (c.lat != null) Text("📍 لها موقع على الخريطة")
@@ -478,6 +555,12 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
         }
     }
     val done = c.status == "resolved"
+    val pending = c.status == "pending_review"
+    var shortNote by rememberSaveable(c.id) { mutableStateOf("") }
+    var returnText by rememberSaveable(c.id) { mutableStateOf("") }
+    var blockReason by rememberSaveable(c.id) { mutableStateOf("") }
+    var showBlock by rememberSaveable(c.id) { mutableStateOf(false) }
+    var blocking by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(listOf<String>()) }
     DisposableEffect(c.id) {
         val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.US)
@@ -515,12 +598,23 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 if (c.dupCount > 0) Text("🔁 تكررت هذه الشكوى " + c.dupCount + " مرة")
                 if (c.lat != null && c.lng != null) OutlinedButton(onClick = { openMap(ctx, c.lat, c.lng) }) { Text("📍 فتح موقع الشكوى على الخريطة") }
                 if (c.rating > 0) Text("تقييم المواطن: " + "⭐".repeat(c.rating.toInt()))
+                if (c.returnNote.isNotBlank() && c.status == "in_progress") Text("↩️ أُعيد إليك من القسم: " + c.returnNote, color = MaterialTheme.colorScheme.error)
+                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Text("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason + " — أسندها لكادر آخر أو اتخذ قراراً", color = MaterialTheme.colorScheme.error)
                 Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
                 if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved") {
+                    val ms = matStatus(c)
                     Text("📦 المواد المطلوبة: " + c.materials)
-                    if (c.materialsReady) Text("✅ المواد جاهزة")
-                    else if (crewMode) Text("⏳ بانتظار تجهيز المواد من القسم")
-                    else Button(onClick = { markMaterialsReady(c.id); onClose() }) { Text("📦 تم تجهيز المواد") }
+                    Text("حالة المواد: " + matStatusAr(ms) + (if (ms == "partial" && c.materialsNote.isNotBlank()) " — الناقص: " + c.materialsNote else ""),
+                        color = if (ms == "partial") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                    if (crewMode) {
+                        if (ms == "ready") Button(onClick = { markMaterialsReceived(c.id, c.crew); onClose() }) { Text("📥 استلمت المواد") }
+                        else if (ms != "received") Text("⏳ بانتظار تجهيز المواد من القسم")
+                    } else if (ms != "ready" && ms != "received" && !pending) {
+                        if (ms == "requested") OutlinedButton(onClick = { setMaterialsStatus(c.id, "preparing", ""); onClose() }) { Text("⏳ قيد التجهيز") }
+                        OutlinedTextField(shortNote, { shortNote = it }, label = { Text("الناقص من المواد (للنقص الجزئي)") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedButton(enabled = shortNote.isNotBlank(), onClick = { setMaterialsStatus(c.id, "partial", shortNote.trim()); onClose() }) { Text("⚠️ نقص جزئي") }
+                        Button(onClick = { markMaterialsReady(c.id); onClose() }) { Text("📦 تم تجهيز المواد") }
+                    }
                 }
                 if (c.repairable == false && c.status != "resolved") Text("🚫 التقرير: غير ممكن الصيانة — بانتظار قرار الإدارة", color = MaterialTheme.colorScheme.error)
                 Text(c.text)
@@ -540,10 +634,49 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         Text("صورة بعد الصيانة")
                         Image(bitmap = doneImg, contentDescription = null, modifier = Modifier.fillMaxWidth())
                     }
+                } else if (pending) {
+                    // الكادر أرسل الإنجاز: بانتظار اعتماد القسم قبل وصوله للمواطن
+                    Text("🔎 بانتظار اعتماد القسم", style = MaterialTheme.typography.titleSmall)
+                    if (c.reply.isNotBlank()) Text("ملخص العمل المرسل من الكادر: " + c.reply)
+                    val pendImg = remember(c.id, c.afterB64.length) {
+                        if (c.afterB64.isEmpty()) null else try {
+                            val bb = Base64.decode(c.afterB64, Base64.DEFAULT)
+                            BitmapFactory.decodeByteArray(bb, 0, bb.size)?.asImageBitmap()
+                        } catch (e: Exception) { null }
+                    }
+                    if (pendImg != null) {
+                        Text("صورة بعد الصيانة")
+                        Image(bitmap = pendImg, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                    }
+                    if (crewMode) {
+                        Text("⏳ أُرسل الإنجاز، وسيصل المواطن بعد اعتماد القسم.")
+                    } else {
+                        Button(onClick = { approveCompletion(c.id); onClose() }) { Text("✅ اعتماد وإرسال للمواطن") }
+                        OutlinedTextField(returnText, { returnText = it }, label = { Text("سبب الإرجاع للكادر") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedButton(enabled = returnText.isNotBlank(), onClick = { returnToCrew(c.id, returnText.trim()); onClose() }) { Text("↩️ إرجاع للكادر لاستكمال العمل") }
+                    }
                 } else {
                     if (crewMode) {
                         if (c.arrivedMs > 0) Text("📍 وصلتَ إلى الموقع: " + SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(c.arrivedMs)))
                         else Button(onClick = { markArrived(c.id, c.status, c.crew); onClose() }) { Text("📍 وصلت إلى الموقع") }
+                        OutlinedButton(onClick = { showBlock = !showBlock }) { Text("🚫 تعذّر العمل") }
+                        if (showBlock) {
+                            Text("سبب التعذّر (ستعود الشكوى للقسم):", style = MaterialTheme.typography.bodySmall)
+                            listOf("الموقع مغلق أو لا يمكن الوصول", "المواطن غير موجود", "يحتاج معدات أو كادراً أكبر", "خارج اختصاص القسم", "أخرى (اكتب التفاصيل في خانة الرد)").forEach { r ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(selected = blockReason == r, onClick = { blockReason = r })
+                                    Text(r)
+                                }
+                            }
+                            Button(enabled = blockReason.isNotBlank() && !blocking, onClick = {
+                                blocking = true
+                                val why = blockReason + (if (reply.isNotBlank()) " — " + reply.trim() else "")
+                                blockWork(c.id, c.crew, why) { e ->
+                                    blocking = false
+                                    if (e == null) onClose() else { err = e; android.widget.Toast.makeText(ctx, e, android.widget.Toast.LENGTH_LONG).show() }
+                                }
+                            }) { Text(if (blocking) "جارٍ الإرسال..." else "إعادة الشكوى للقسم") }
+                        }
                     }
                     OutlinedTextField(reply, { reply = it }, label = { Text("رد على المواطن / ملخص العمل المنجز") }, modifier = Modifier.fillMaxWidth())
                     if (crews.isNotEmpty() && !crewMode) {
@@ -582,7 +715,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         OutlinedTextField(materials, { materials = it }, label = { Text("المواد المطلوبة للصيانة") }, modifier = Modifier.fillMaxWidth())
                     }
                     Text("الأعمال المنجزة", style = MaterialTheme.typography.titleSmall)
-                    Text("عند انتهاء العمل أرفق صورة بعد الصيانة (اختياري) ثم أرسل الإنجاز للمواطن والمدير.", style = MaterialTheme.typography.bodySmall)
+                    Text(if (crewMode) "عند انتهاء العمل أرفق صورة بعد الصيانة (اختياري) ثم أرسل الإنجاز؛ يعتمده القسم ثم يصل المواطن." else "عند انتهاء العمل أرفق صورة بعد الصيانة (اختياري) ثم أرسل الإنجاز للمواطن والمدير.", style = MaterialTheme.typography.bodySmall)
                     val shown = if (pendingAfter.isNotEmpty()) pendingAfter else c.afterB64
                     val aft = remember(shown.length) {
                         if (shown.isEmpty()) null else try {
@@ -596,7 +729,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         if (reply.isBlank()) err = "اكتب ملخص العمل المنجز في خانة الرد"
                         else {
                             err = ""; sending = true
-                            completeWork(c.id, reply.trim(), pendingAfter) { e ->
+                            completeWork(c.id, reply.trim(), pendingAfter, crewMode) { e ->
                                 sending = false
                                 if (e == null) onClose() else { err = e; android.widget.Toast.makeText(ctx, e, android.widget.Toast.LENGTH_LONG).show() }
                             }
@@ -605,7 +738,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                                 if (sending) { sending = false; err = "الاتصال بطيء؛ إن لم يظهر الإنجاز بعد قليل تحقق من الإنترنت" }
                             }
                         }
-                    }) { Text(if (sending) "جارٍ الإرسال..." else "✅ إرسال الإنجاز للمواطن والمدير") }
+                    }) { Text(if (sending) "جارٍ الإرسال..." else if (crewMode) "📨 إرسال الإنجاز لاعتماد القسم" else "✅ إرسال الإنجاز للمواطن والمدير") }
                     if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
                 }
                 if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
@@ -616,7 +749,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
             }
         },
         confirmButton = {
-            if (done) TextButton(onClick = onClose) { Text("إغلاق") }
+            if (done || pending) TextButton(onClick = onClose) { Text("إغلاق") }
             else Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     val r = repairable
@@ -630,6 +763,6 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 if (c.status == "routed" && !crewMode) Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
             }
         },
-        dismissButton = { if (!done) TextButton(onClick = onClose) { Text("إغلاق") } }
+        dismissButton = { if (!done && !pending) TextButton(onClick = onClose) { Text("إغلاق") } }
     )
 }

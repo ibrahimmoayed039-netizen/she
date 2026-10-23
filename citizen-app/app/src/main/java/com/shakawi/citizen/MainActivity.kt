@@ -80,7 +80,7 @@ fun trackLine(c: Complaint): String {
 fun statusAr(s: String) = when (s) {
     "new" -> "قيد المراجعة"
     "routed" -> "تم التوجيه للقسم"
-    "in_progress" -> "قيد المعالجة"
+    "in_progress", "pending_review" -> "قيد المعالجة"
     "resolved" -> "تم الحل"
     else -> s
 }

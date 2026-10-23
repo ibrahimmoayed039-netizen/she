@@ -1,4 +1,4 @@
-const STATUS = { new: 'بانتظار التحليل', routed: 'تم التوجيه', in_progress: 'قيد المعالجة', resolved: 'تم الحل' };
+const STATUS = { new: 'بانتظار التحليل', routed: 'تم التوجيه', in_progress: 'قيد المعالجة', pending_review: 'بانتظار الاعتماد', resolved: 'تم الحل' };
 const PRI = { urgent: 'عاجلة', high: 'عالية', medium: 'متوسطة', low: 'منخفضة' };
 let tab = 'new', list = [], settings = {}, staff = [];
 
@@ -35,6 +35,8 @@ function timeline(c) {
     ['📦 تجهيز المواد', c.materialsReadyMs],
     ['🔧 بدء المعالجة', c.startedMs],
     ['🔁 إعادة فتح المواطن', c.reopenedMs],
+    ['📨 إرسال الكادر للإنجاز', c.submittedMs],
+    ['✔ اعتماد القسم', c.approvedMs],
     ['✅ وقت الإنجاز', c.resolvedMs],
   ].filter((r) => r[1]);
   if (!rows.length) return '';
@@ -45,6 +47,8 @@ function timeline(c) {
   } else if (c.status !== 'new' && c.createdMs) {
     extra.push('⏳ مضى على الشكوى: ' + fmtD(Date.now() - c.createdMs) + ' ولم تُنجز بعد');
   }
+  if (c.status === 'pending_review' && c.submittedMs) extra.push('🔎 بانتظار اعتماد القسم منذ ' + fmtD(Date.now() - c.submittedMs));
+  if (c.resolvedMs && c.approvedMs && c.submittedMs) extra.push('🕵️ زمن مراجعة القسم: ' + fmtD(c.approvedMs - c.submittedMs));
   return h('div', { class: 'small' },
     ...rows.map((r) => h('div', {}, r[0] + ': ' + fmtT(r[1]))),
     ...extra.map((t) => h('div', { class: c.resolvedMs ? '' : 'warn' }, t)));
@@ -56,13 +60,46 @@ function stageSteps(c) {
     ['📥 استُلمت', true],
     ['➡️ وُجِّهت', c.status !== 'new'],
     ['🚧 أُسندت' + (c.crew ? ' (' + c.crew + ')' : ''), !!c.crew],
-    ['🔍 الكشف', !!(c.arrivedMs || c.assessedMs) || c.status === 'resolved'],
+    ['🔍 الكشف', !!(c.arrivedMs || c.assessedMs) || c.status === 'resolved' || c.status === 'pending_review'],
   ];
   if (c.repairable === false) s.push(['🚫 غير ممكن الصيانة — بانتظار قرار الإدارة', false]);
-  else if (c.repairable === true && c.materials) s.push(['📦 المواد', !!c.materialsReady || c.status === 'resolved']);
-  s.push(['✅ الإنجاز', c.status === 'resolved']);
+  else if (c.repairable === true && c.materials) s.push(['📦 المواد', ['ready', 'received'].includes(c.materialsStatus) || !!c.materialsReady || c.status === 'resolved' || c.status === 'pending_review']);
+  s.push(['✅ الإنجاز', c.status === 'resolved' || c.status === 'pending_review']);
+  if (c.crew) s.push(['🕵️ اعتماد القسم', c.status === 'resolved']);
   const cur = s.findIndex((x) => !x[1]);
   return h('div', { class: 'sum' }, ...s.map((x, i) => h('span', { class: x[1] ? 'chip ok' : i === cur ? 'chip warn' : 'chip' }, (x[1] ? '✔ ' : i === cur ? '⏳ ' : '○ ') + x[0])));
+}
+
+const MAT_AR = { requested: '📦 مطلوبة بانتظار التجهيز', preparing: '⏳ قيد التجهيز', partial: '⚠️ نقص جزئي', ready: '✅ جاهزة بانتظار استلام الكادر', received: '✅ استلمها الكادر' };
+const matStatusOf = (c) => c.materialsStatus || (c.materialsReady ? 'ready' : 'requested');
+
+// (2) دورة المواد: مطلوبة › قيد التجهيز › نقص جزئي › جاهزة › استلمها الكادر
+function materialsBox(c) {
+  const ms = matStatusOf(c);
+  const kids = [h('p', { class: ms === 'partial' ? 'rep no' : 'rep yes' },
+    'حالة المواد: ' + MAT_AR[ms] + (ms === 'partial' && c.materialsNote ? ' — الناقص: ' + c.materialsNote : ''))];
+  if (ms !== 'ready' && ms !== 'received') {
+    const note = h('input', { type: 'text', placeholder: 'الناقص من المواد (للنقص الجزئي)' });
+    kids.push(h('div', { class: 'bar' },
+      ms === 'requested' ? h('button', { class: 'act', onclick: () => window.api.materialsStatus(c.id, 'preparing', '') }, '⏳ قيد التجهيز') : '',
+      note,
+      h('button', { class: 'act', onclick: () => { if (!note.value.trim()) { note.focus(); return; } window.api.materialsStatus(c.id, 'partial', note.value.trim()); } }, '⚠️ نقص جزئي'),
+      h('button', { class: 'act', onclick: () => window.api.materialsReady(c.id) }, '📦 تم تجهيز المواد (إشعار الكادر)')));
+  }
+  return h('div', {}, ...kids);
+}
+
+// (1) اعتماد إنجاز الكادر قبل وصوله للمواطن
+function reviewBox(c) {
+  if (c.status !== 'pending_review') return '';
+  const note = h('input', { type: 'text', placeholder: 'سبب الإرجاع للكادر' });
+  return h('div', { class: 'rep no' },
+    h('b', {}, '🔎 الكادر أرسل الإنجاز وبانتظار اعتماد القسم'),
+    c.reply ? h('div', {}, 'ملخص العمل: ' + c.reply) : '',
+    h('div', { class: 'bar' },
+      h('button', { class: 'act', onclick: () => window.api.reviewApprove(c.id) }, '✅ اعتماد وإرسال للمواطن'),
+      note,
+      h('button', { class: 'act', onclick: () => { if (!note.value.trim()) { note.focus(); return; } window.api.reviewReturn(c.id, note.value.trim()); } }, '↩️ إرجاع للكادر')));
 }
 
 function logButton(id) {
@@ -96,9 +133,10 @@ function card(c) {
     h('p', {}, c.text),
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
     c.status !== 'new' ? stageSteps(c) : '',
-    (c.repairable === true && c.materials && c.status !== 'resolved') ? (c.materialsReady
-      ? h('p', { class: 'rep yes' }, '📦 المواد جاهزة')
-      : h('button', { class: 'act', onclick: () => window.api.materialsReady(c.id) }, '📦 تم تجهيز المواد (إشعار الكادر)')) : '',
+    reviewBox(c),
+    (c.blockedReason && !c.crew && c.status !== 'resolved') ? h('p', { class: 'rep no' }, '🚫 تعذّر على الكادر ' + (c.blockedBy || '') + ': ' + c.blockedReason + ' — بانتظار إعادة الإسناد') : '',
+    (c.returnNote && c.status === 'in_progress') ? h('p', { class: 'rep no' }, '↩️ أُرجعت للكادر: ' + c.returnNote) : '',
+    (c.repairable === true && c.materials && c.status !== 'resolved' && c.status !== 'pending_review') ? materialsBox(c) : '',
     c.reopenCount ? h('p', { class: 'rep no' }, '🔁 أعاد المواطن فتحها ' + c.reopenCount + ' مرة' + (c.reopenReason ? ' — السبب: ' + c.reopenReason : '')) : '',
     c.confirmed ? h('p', { class: 'rep yes' }, '✔ أكّد المواطن أن المشكلة حُلّت') : '',
     c.category ? h('p', { class: 'small' }, '🗂 النوع الذي اختاره المواطن: ' + c.category + (c.aiDepartment ? ' (اقترح التحليل: ' + c.aiDepartment + ')' : '')) : '',
@@ -265,7 +303,7 @@ const MAIN_SORTS = {
   oldest: ['الأقدم أولاً', (a, b) => a.createdMs - b.createdMs],
   priority: ['حسب الأولوية', (a, b) => (PRI_RANK[a.priority] ?? 4) - (PRI_RANK[b.priority] ?? 4) || b.createdMs - a.createdMs],
   dept: ['حسب القسم', (a, b) => String(a.department).localeCompare(String(b.department), 'ar') || b.createdMs - a.createdMs],
-  status: ['حسب الحالة', (a, b) => ORD(['routed', 'in_progress', 'resolved'], a.status) - ORD(['routed', 'in_progress', 'resolved'], b.status) || b.createdMs - a.createdMs],
+  status: ['حسب الحالة', (a, b) => ORD(['routed', 'in_progress', 'pending_review', 'resolved'], a.status) - ORD(['routed', 'in_progress', 'pending_review', 'resolved'], b.status) || b.createdMs - a.createdMs],
   crew: ['حسب الكادر', (a, b) => String(a.crew || '~').localeCompare(String(b.crew || '~'), 'ar') || b.createdMs - a.createdMs],
   oldopen: ['الأقدم غير المنجزة أولاً', (a, b) => (a.status === 'resolved') - (b.status === 'resolved') || a.createdMs - b.createdMs],
 };
@@ -321,7 +359,7 @@ const CLS = {
     return hr < 6 ? { k: 0, l: 'الفجر (12 ص – 6 ص)' } : hr < 12 ? { k: 1, l: 'الصباح (6 ص – 12 ظ)' } : hr < 17 ? { k: 2, l: 'بعد الظهر (12 – 5 م)' } : hr < 21 ? { k: 3, l: 'المساء (5 – 9 م)' } : { k: 4, l: 'الليل (9 م – 12 ص)' };
   } },
   dept: { name: 'القسم', f: (c) => ({ k: c.department || '~', l: c.department || 'غير موجّهة' }) },
-  status: { name: 'الحالة', f: (c) => ({ k: ORD(['new', 'routed', 'in_progress', 'resolved'], c.status), l: STATUS[c.status] || c.status }) },
+  status: { name: 'الحالة', f: (c) => ({ k: ORD(['new', 'routed', 'in_progress', 'pending_review', 'resolved'], c.status), l: STATUS[c.status] || c.status }) },
   priority: { name: 'الأولوية', f: (c) => ({ k: ORD(['urgent', 'high', 'medium', 'low'], c.priority), l: 'أولوية ' + (PRI[c.priority] || 'غير محددة') }) },
   crew: { name: 'الكادر', f: (c) => ({ k: c.crew || '~', l: c.crew ? '🚧 ' + c.crew : 'بدون كادر' }) },
   branch: { name: 'الفرع', f: (c) => ({ k: c.branch || '~', l: c.branch || 'بدون فرع' }) },
@@ -775,7 +813,7 @@ function updateChrome() {
   const cnt = (f) => list.filter(f).length;
   const setBadge = (id, n) => { const e = document.getElementById(id); if (e) { e.textContent = n; e.classList.toggle('hide', !n); } };
   setBadge('b-new', cnt((c) => c.status === 'new'));
-  setBadge('b-routed', cnt((c) => c.status === 'routed' || c.status === 'in_progress'));
+  setBadge('b-routed', cnt((c) => c.status === 'routed' || c.status === 'in_progress' || c.status === 'pending_review'));
   const k = document.getElementById('kpis');
   if (!k) return;
   const sod = new Date(); sod.setHours(0, 0, 0, 0);
@@ -783,6 +821,7 @@ function updateChrome() {
   k.replaceChildren(
     kpi('amber', cnt((c) => c.status === 'new'), 'جديدة'),
     kpi('', cnt((c) => c.status === 'routed' || c.status === 'in_progress'), 'قيد المعالجة'),
+    kpi('amber', cnt((c) => c.status === 'pending_review'), 'بانتظار الاعتماد'),
     kpi('red', cnt((c) => c.priority === 'urgent' && c.status !== 'resolved' && c.status !== 'new'), 'عاجلة مفتوحة'),
     kpi('green', cnt((c) => c.status === 'resolved' && c.resolvedMs >= sod.getTime()), 'منجزة اليوم'));
 }
