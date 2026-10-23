@@ -362,6 +362,7 @@ const CLS = {
   status: { name: 'الحالة', f: (c) => ({ k: ORD(['new', 'routed', 'in_progress', 'pending_review', 'resolved'], c.status), l: STATUS[c.status] || c.status }) },
   priority: { name: 'الأولوية', f: (c) => ({ k: ORD(['urgent', 'high', 'medium', 'low'], c.priority), l: 'أولوية ' + (PRI[c.priority] || 'غير محددة') }) },
   crew: { name: 'الكادر', f: (c) => ({ k: c.crew || '~', l: c.crew ? '🚧 ' + c.crew : 'بدون كادر' }) },
+  sector: { name: 'القاطع', f: (c) => { const n = sectorOf(c); return { k: n || '~', l: sectorLabel(n) }; } },
   branch: { name: 'الفرع', f: (c) => ({ k: c.branch || '~', l: c.branch || 'بدون فرع' }) },
   speed: { name: 'سرعة الإنجاز', f: speedOf },
   rating: { name: 'تقييم المواطن', f: (c) => c.rating ? { k: 5 - c.rating, l: '⭐'.repeat(c.rating) + ' (' + c.rating + ')' } : { k: 9, l: 'لم يُقيَّم' } },
@@ -459,7 +460,7 @@ function renderDone() {
   pg.slice.forEach((c) => {
     out.push(h('div', { class: 'card' },
       h('h3', {}, '✅ ' + c.title),
-      h('small', {}, [c.department, c.crew ? 'الكادر: ' + crewLabel(c) : '', c.branch ? 'الفرع: ' + c.branch : ''].filter(Boolean).join(' • ')),
+      h('small', {}, [c.department, c.crew ? 'الكادر: ' + crewLabel(c) : '', c.branch ? 'الفرع: ' + c.branch : '', sectorOf(c) ? 'القاطع: ' + sectorOf(c) : ''].filter(Boolean).join(' • ')),
       h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '') + (c.confirmed ? ' • ✔ أكّد المواطن' : ' • ⏳ لم يؤكد المواطن بعد') + (c.reopenCount ? ' • 🔁 أُعيد فتحها ' + c.reopenCount + ' مرة' : '')),
       c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
       (c.materials && c.repairable) ? h('p', { class: 'small' }, 'المواد: ' + c.materials) : '',
@@ -474,6 +475,17 @@ function renderDone() {
 }
 
 // ---------------- كوادر الأقسام (أسماء الكوادر لإسناد الشكاوى) ----------------
+// نافذة تأكيد داخل الصفحة (بدل confirm الأصلي الذي يُجمّد حقول الإدخال في Electron على ويندوز)
+function askConfirm(msg) {
+  return new Promise((resolve) => {
+    const done = (v) => { ov.remove(); resolve(v); };
+    const ok = h('button', { class: 'act', onclick: () => done(true) }, 'نعم، احذف');
+    const no = h('button', { class: 'act', onclick: () => done(false) }, 'إلغاء');
+    const box = h('div', { class: 'card', style: 'max-width:420px;margin:0;white-space:pre-line;text-align:right' }, msg, h('div', { class: 'bar', style: 'margin-top:14px' }, ok, no));
+    const ov = h('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999', onclick: (e) => { if (e.target === ov) done(false); } }, box);
+    document.body.append(ov); no.focus();
+  });
+}
 let crewAdd = { department: '', names: '', msg: '' };
 // صف حساب: الاسم + كلمة مرور جديدة + تعطيل/تفعيل + حذف
 function accountRow(s, label) {
@@ -488,12 +500,12 @@ function accountRow(s, label) {
       pw, h('button', { class: 'act', onclick: () => run(window.api.setStaffPassword(s.id, pw.value), 'تم تغيير كلمة المرور').then((r) => { if (r.ok) pw.value = ''; }) }, 'تغيير كلمة المرور'),
       h('button', { class: 'act', onclick: () => run(window.api.setStaffDisabled(s.id, !s.disabled), s.disabled ? 'تم التفعيل' : 'تم التعطيل') }, s.disabled ? 'تفعيل الحساب' : 'تعطيل الحساب'),
       h('button', { class: 'act', onclick: async () => {
-        if (!confirm('حذف هذا الحساب نهائياً؟\n' + label + '\n(لا يحذف الشكاوى السابقة)')) return;
+        if (!(await askConfirm('حذف هذا الحساب نهائياً؟\n' + label + '\n(لا يحذف الشكاوى السابقة)'))) return;
         await run(window.api.deleteStaff(s.id), 'تم الحذف');
       } }, '🗑 حذف'), st));
 }
 let deptCrews = [];
-let deptStaffForm = { department: '', name: '', email: '', password: '', msg: '' };
+let deptStaffForm = { department: '', sector: '', name: '', email: '', password: '', msg: '' };
 function deptStaffCard() {
   const depts = allDepts();
   if (!deptStaffForm.department && depts.length) deptStaffForm.department = depts[0];
@@ -505,7 +517,8 @@ function deptStaffCard() {
     h('h3', {}, '👤 إنشاء حساب موظف قسم'),
     h('p', { class: 'small' }, 'الحساب الذي يستلم شكاوى القسم ويُسند الكوادر (بدل Firebase Console).'),
     h('div', { class: 'bar' },
-      field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; })),
+      field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; f.sector = ''; render(); })),
+      field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(f.department).map((x) => [x.name, x.name])], f.sector, (v) => { f.sector = v; })),
       field('الاسم (اختياري)', inp('name', 'اسم الموظف')),
       field('البريد', inp('email', 'staff@example.com')),
       field('كلمة المرور', inp('password', '6 أحرف على الأقل')),
@@ -513,12 +526,75 @@ function deptStaffCard() {
         msg.textContent = 'جارٍ الإنشاء...';
         const r = await window.api.createDeptStaff({ ...f });
         f.msg = r.ok ? '✅ تم إنشاء الحساب' : '❌ ' + r.error;
-        if (r.ok) { f.name = ''; f.email = ''; f.password = ''; }
+        if (r.ok) { f.name = ''; f.email = ''; f.password = ''; f.sector = ''; }
         render();
       } }, 'إنشاء')),
     msg,
     accounts.length ? h('div', {}, h('b', {}, 'حسابات الموظفين:'),
-      ...accounts.map((s) => accountRow(s, (s.departments.join('، ') || '-') + (s.email ? ' • ' + s.email : '')))) : '');
+      ...[...new Set(accounts.map((s) => (s.departments[0] || '') + '\u0001' + (s.sector || '')))].sort().map((key) => {
+        const [d, sc] = key.split('\u0001');
+        return sectorGroup(d, sc, accounts.filter((s) => (s.departments[0] || '') === d && (s.sector || '') === sc)
+          .map((s) => accountRow(s, (s.name || s.email || '-') + (s.name && s.email ? ' • ' + s.email : ''))));
+      })) : '');
+}
+// ---------------- القواطع (قسم ← قاطع ← مناطق) ----------------
+// مثال: قسم البلدية ← قاطع الكرادة ← (الكرادة داخل، السعدون، ...). تُحفظ في الإعدادات.
+// عنوان مجموعة قاطع: أيقونة + اسم القسم والقاطع + عدد الحسابات، والحسابات داخل إطار واحد
+function sectorGroup(dept, sc, cards) {
+  return h('div', { class: 'sec-group' },
+    h('div', { class: 'sec-head' + (sc ? '' : ' none') },
+      h('div', { class: 'sec-ico' }, sc ? '🗺' : '📂'),
+      h('div', { class: 'sec-title' }, h('b', {}, sc || 'بدون قاطع'), h('small', {}, dept || '-')),
+      h('span', { class: 'sec-count' }, String(cards.length))),
+    h('div', { class: 'sec-body' }, ...cards));
+}
+let sectorForm = { department: '', name: '', areas: '', msg: '' };
+const sectorsOf = (dept) => (settings.sectors || []).filter((x) => x.dept === dept);
+// القاطع الذي تنتمي إليه شكوى: يطابق اسم القاطع أو إحدى مناطقه في الفرع/العنوان/نص الشكوى
+function sectorOf(c) {
+  const hay = [c.branch, c.title, c.text].filter(Boolean).join(' ');
+  const hit = sectorsOf(c.department).find((x) => [x.name, ...x.areas].some((a) => a && hay.includes(a)));
+  return hit ? hit.name : '';
+}
+const sectorLabel = (name) => (name ? '🗺 ' + name : 'بدون قاطع');
+function sectorManager() {
+  const depts = allDepts();
+  if (!sectorForm.department && depts.length) sectorForm.department = depts[0];
+  const f = sectorForm;
+  const msg = h('div', { class: 'small' }, f.msg);
+  const save = async (list2, okText) => {
+    settings = { ...settings, sectors: list2 };
+    await window.api.setSettings(settings);
+    f.msg = '✅ ' + okText; render();
+  };
+  return h('div', { class: 'card' },
+    h('h3', {}, '🗺 قواطع الأقسام'),
+    h('p', { class: 'small' }, 'مثال: القسم «البلدية» ← القاطع «قاطع الكرادة» ← المناطق «الكرادة داخل، السعدون». تُصنَّف الشكوى تلقائياً إلى القاطع إذا ورد اسم القاطع أو إحدى مناطقه في فرعها أو عنوانها أو نصها.'),
+    h('div', { class: 'bar' },
+      field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; render(); })),
+      field('اسم القاطع', h('input', { type: 'text', placeholder: 'مثال: قاطع الكرادة', value: f.name, oninput: (e) => { f.name = e.target.value; } })),
+      field('المناطق (افصل بفاصلة)', h('input', { type: 'text', placeholder: 'منطقة 1، منطقة 2', value: f.areas, oninput: (e) => { f.areas = e.target.value; } })),
+      h('button', { class: 'act', onclick: async () => {
+        const name = f.name.trim(), areas = f.areas.split(/[،,;؛\n]/).map((v) => v.trim()).filter(Boolean);
+        if (!name) { f.msg = 'اكتب اسم القاطع'; return render(); }
+        const rest = (settings.sectors || []).filter((x) => !(x.dept === f.department && x.name === name));
+        const old = (settings.sectors || []).find((x) => x.dept === f.department && x.name === name);
+        f.name = ''; f.areas = '';
+        await save([...rest, { dept: f.department, name, areas: [...new Set([...(old ? old.areas : []), ...areas])] }], 'تم حفظ القاطع');
+      } }, 'إضافة / تحديث')),
+    msg,
+    ...depts.flatMap((d) => {
+      const secs = sectorsOf(d);
+      return secs.length ? [h('div', { class: 'sec-dept' }, d), h('div', { class: 'sec-grid' },
+        ...secs.map((x) => h('div', { class: 'sec-card' },
+          h('b', {}, '🗺 ' + x.name),
+          h('div', { class: 'areas' }, ...(x.areas.length ? x.areas.map((a) => h('span', { class: 'area' }, a)) : [h('span', { class: 'none' }, 'لم تُحدَّد مناطق')])),
+          h('a', { class: 'x', href: '#', title: 'حذف القاطع', onclick: async (e) => {
+            e.preventDefault();
+            if (!(await askConfirm('حذف القاطع «' + x.name + '» من ' + d + '؟ (لا يحذف الحسابات ولا الشكاوى)'))) return;
+            await save((settings.sectors || []).filter((y) => y !== x && !(y.dept === d && y.name === x.name)), 'تم حذف القاطع');
+          } }, '✖'))))] : [];
+    }));
 }
 function crewManager() {
   const depts = allDepts();
@@ -551,7 +627,7 @@ function crewManager() {
         ...ns.map((k) => h('span', { class: 'chip' }, '🚧 ' + k + ' ',
           h('a', { href: '#', title: 'حذف من القائمة', onclick: async (e) => {
             e.preventDefault();
-            if (!confirm('حذف «' + k + '» من كوادر ' + d + '؟ (لا يحذف حساب الكادر ولا شكاواه)')) return;
+            if (!(await askConfirm('حذف «' + k + '» من كوادر ' + d + '؟ (لا يحذف حساب الكادر ولا شكاواه)'))) return;
             const r = await window.api.editCrews(d, [], [k]);
             crewAdd.msg = r.ok ? '✅ تم الحذف' : '❌ ' + r.error; render();
           } }, '✖')))) : '';
@@ -559,7 +635,7 @@ function crewManager() {
 }
 
 // ---------------- حسابات الكوادر ----------------
-let crewForm = { department: '', crew: '', name: '', email: '', password: '', count: '1', msg: '', results: [] };
+let crewForm = { department: '', sector: '', crew: '', name: '', email: '', password: '', count: '1', msg: '', results: [] };
 // اسم المسؤول عن الكادر (من حساب الكادر) لعرضه بجانب اسم الكادر
 function crewLabel(c) {
   if (!c.crew) return '';
@@ -576,7 +652,8 @@ function crewAccounts() {
     h('h3', {}, '➕ إنشاء حساب كادر ميداني'),
     h('p', { class: 'small' }, 'يرى حساب الكادر شكاواه المُسندة إليه فقط، ويضغط «وصلت إلى الموقع» ثم يرسل الإنجاز.'),
     h('div', { class: 'bar' },
-      field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; })),
+      field('القسم', sel(depts.map((d) => [d, d]), crewForm.department, (v) => { crewForm.department = v; crewForm.sector = ''; render(); })),
+      field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(crewForm.department).map((x) => [x.name, x.name])], crewForm.sector, (v) => { crewForm.sector = v; })),
       field('اسم الكادر', inp('crew', 'مثال: كادر')),
       field('اسم المسؤول (اختياري)', inp('name', 'مثال: أحمد علي')),
       field('عدد الكوادر', h('input', { type: 'number', min: '1', max: '30', value: crewForm.count, oninput: (e) => { crewForm.count = e.target.value; } })),
@@ -594,7 +671,11 @@ function crewAccounts() {
     msg,
     ...crewForm.results.map((r) => h('div', { class: r.ok ? 'rep yes' : 'rep no' }, (r.ok ? '✅ ' : '❌ ') + r.crew + ' — ' + r.email + (r.ok ? '' : ' : ' + r.error))),
     accounts.length ? h('div', {}, h('b', {}, 'الحسابات الحالية:'),
-      ...accounts.map((s) => accountRow(s, '🚧 ' + s.crew + ' • ' + (s.departments[0] || '') + (s.email ? ' • ' + s.email : '')))) : '');
+      ...[...new Set(accounts.map((s) => (s.departments[0] || '') + '\u0001' + (s.sector || '')))].sort().map((key) => {
+        const [d, sc] = key.split('\u0001');
+        return sectorGroup(d, sc, accounts.filter((s) => (s.departments[0] || '') === d && (s.sector || '') === sc)
+          .map((s) => accountRow(s, '🚧 ' + s.crew + (s.email ? ' • ' + s.email : ''))));
+      })) : '');
 }
 
 // ---------------- لوحة أداء الكوادر ----------------
@@ -700,9 +781,9 @@ function renderPerf() {
 
 function renderBusy() {
   const stats = crewStats();
-  if (!stats.length) return [crewManager(), crewAccounts(), deptStaffCard(), h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد: أضف أسماءها من «كوادر الأقسام» أعلاه')];
+  if (!stats.length) return [crewManager(), sectorManager(), crewAccounts(), deptStaffCard(), h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد: أضف أسماءها من «كوادر الأقسام» أعلاه')];
   const now = Date.now();
-  const out = [crewManager(), crewAccounts(), deptStaffCard()];
+  const out = [crewManager(), sectorManager(), crewAccounts(), deptStaffCard()];
   let totalBusy = 0, totalFree = 0;
   const blocks = stats.map((d) => {
     const busy = [], free = [];

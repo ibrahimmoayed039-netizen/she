@@ -247,7 +247,7 @@ async function connect() {
         win.webContents.send('staff', snap.docs.map((d) => {
           const x = d.data();
           const depts = Array.isArray(x.departments) && x.departments.length ? x.departments : (x.department ? [x.department] : []);
-          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x), role: x.role || '', crew: x.crew || '', email: x.email || '', name: x.name || '', disabled: x.disabled === true };
+          return { id: d.id, departments: depts, branches: toBranches(x), crews: toCrews(x), role: x.role || '', crew: x.crew || '', email: x.email || '', name: x.name || '', disabled: x.disabled === true, sector: x.sector || '' };
         }));
       },
       (e) => log('خطأ في قراءة الموظفين: ' + e.message)
@@ -531,7 +531,7 @@ ipcMain.handle('staff:createDept', async (_, p) => {
     if (!dept || !email.includes('@')) return { ok: false, error: 'أكمل القسم وبريداً صحيحاً' };
     if (pw.length < 6) return { ok: false, error: 'كلمة المرور 6 أحرف على الأقل' };
     const u = await admin.auth().createUser({ email, password: pw });
-    await db.collection('staff').doc(u.uid).set({ department: dept, email, name });
+    await db.collection('staff').doc(u.uid).set({ department: dept, email, name, sector: String(p.sector || '').trim() });
     log(`تم إنشاء حساب موظف لقسم ${dept}`);
     return { ok: true };
   } catch (e) {
@@ -578,12 +578,12 @@ ipcMain.handle('staff:setName', async (_, id, name) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
-async function createCrewAccount(dept, crew, email, pw, name) {
+async function createCrewAccount(dept, crew, email, pw, name, sector) {
   try {
     const ex = await db.collection('staff').where('role', '==', 'crew').where('department', '==', dept).where('crew', '==', crew).get();
     if (!ex.empty) return { crew, email, ok: false, error: 'يوجد حساب لهذا الكادر في هذا القسم' };
     const u = await admin.auth().createUser({ email, password: pw });
-    await db.collection('staff').doc(u.uid).set({ role: 'crew', department: dept, crew, email, name: name || '' });
+    await db.collection('staff').doc(u.uid).set({ role: 'crew', department: dept, crew, email, name: name || '', sector: sector || '' });
     log(`تم إنشاء حساب الكادر "${crew}" (${dept})`);
     return { crew, email, ok: true };
   } catch (e) {
@@ -603,7 +603,7 @@ ipcMain.handle('crew:create', async (_, p) => {
   const [local, domain] = email.split('@');
   const results = [];
   for (let i = 1; i <= n; i++) {
-    results.push(await createCrewAccount(dept, n > 1 ? `${crew} ${i}` : crew, n > 1 ? `${local}${i}@${domain}` : email, pw, n > 1 ? '' : String(p.name || '').trim()));
+    results.push(await createCrewAccount(dept, n > 1 ? `${crew} ${i}` : crew, n > 1 ? `${local}${i}@${domain}` : email, pw, n > 1 ? '' : String(p.name || '').trim(), String(p.sector || '').trim()));
   }
   const bad = results.filter((r) => !r.ok);
   return { ok: bad.length === 0, error: bad.length ? `فشل ${bad.length} من ${n}` : '', results };

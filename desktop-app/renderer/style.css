@@ -173,3 +173,24 @@ details.grp>.card:hover{transform:none}
 .card .small>div{padding:2px 0;line-height:1.7}
 .card>button.act{margin-inline-end:8px}
 .card p{margin:8px 0;line-height:1.7}
+
+/* ===== القواطع: عناوين المجموعات وبطاقات القواطع ===== */
+.sec-group{margin:16px 0 4px;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--surface2);box-shadow:var(--sh-sm),var(--hl)}
+.sec-head{display:flex;align-items:center;gap:12px;padding:11px 16px;background:linear-gradient(90deg,var(--primary),var(--accent));color:#fff}
+.sec-head.none{background:linear-gradient(90deg,#64748b,#94a3b8)}
+.sec-ico{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-size:18px;flex:none}
+.sec-title{display:flex;flex-direction:column;line-height:1.35;min-width:0}
+.sec-title b{font-size:16px}.sec-title small{opacity:.85;font-size:12px}
+.sec-count{margin-inline-start:auto;background:rgba(255,255,255,.22);border-radius:999px;padding:3px 12px;font-size:13px;font-weight:700}
+.sec-body{padding:10px 12px 4px}
+.sec-body .card{margin:0 0 10px;box-shadow:var(--sh-sm),var(--hl)}
+.sec-body .card:hover{transform:none}
+.sec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:10px 0}
+.sec-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px;box-shadow:var(--sh-sm),var(--hl);border-top:4px solid var(--primary)}
+.sec-card b{display:flex;align-items:center;gap:8px;font-size:15px}
+.sec-card .areas{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.sec-card .area{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--info-bg);color:var(--text)}
+.sec-card .none{font-size:12px;color:var(--muted)}
+.sec-card .x{position:absolute;top:8px;inset-inline-start:10px;color:var(--muted);text-decoration:none;font-size:14px;padding:2px 6px;border-radius:8px}
+.sec-card .x:hover{background:var(--danger-bg);color:var(--danger)}
+.sec-dept{margin:16px 0 0;font-size:14px;font-weight:700;color:var(--muted)}

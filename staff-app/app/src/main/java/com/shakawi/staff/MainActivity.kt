@@ -87,6 +87,16 @@ fun priorityAr(p: String): String = when (p) {
 /** الاسم المخصص للحساب (الحقل name في مستند staff) ويظهر في سجل الشكاوى بدل البريد */
 var myDisplayName: String = ""
 
+/** سياق التطبيق لعرض رسائل الخطأ من الدوال العامة */
+var appCtx: android.content.Context? = null
+
+/** عند رفض الحفظ (قواعد Firestore أو الشبكة) تظهر رسالة بدل الصمت */
+fun com.google.android.gms.tasks.Task<*>.alertOnFail(what: String) {
+    addOnFailureListener { e ->
+        appCtx?.let { android.widget.Toast.makeText(it, "تعذّر " + what + ": " + (e.message ?: ""), android.widget.Toast.LENGTH_LONG).show() }
+    }
+}
+
 fun logEvent(id: String, action: String) {
     val by = myDisplayName.ifBlank { FirebaseAuth.getInstance().currentUser?.email ?: "موظف" }
     FirebaseFirestore.getInstance().collection("complaints").document(id).collection("log")
@@ -130,7 +140,8 @@ fun markMaterialsReady(id: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
         .update(mapOf("materialsReady" to true, "materialsStatus" to "ready", "materialsNote" to "", "materialsReadyAt" to ts, "updatedAt" to ts))
-    logEvent(id, "جُهِّزت المواد المطلوبة")
+        .addOnSuccessListener { logEvent(id, "جُهِّزت المواد المطلوبة") }
+        .alertOnFail("حفظ تجهيز المواد")
 }
 
 /** قيد التجهيز أو نقص جزئي (مع ذكر الناقص) */
@@ -138,7 +149,8 @@ fun setMaterialsStatus(id: String, status: String, note: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
         .update(mapOf("materialsReady" to false, "materialsStatus" to status, "materialsNote" to note, "updatedAt" to ts))
-    logEvent(id, if (status == "partial") "نقص جزئي في المواد — الناقص: $note" else "المواد قيد التجهيز")
+        .addOnSuccessListener { logEvent(id, if (status == "partial") "نقص جزئي في المواد — الناقص: $note" else "المواد قيد التجهيز") }
+        .alertOnFail("حفظ حالة المواد")
 }
 
 /** الكادر يؤكد استلام المواد */
@@ -146,7 +158,8 @@ fun markMaterialsReceived(id: String, crew: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
         .update(mapOf("materialsStatus" to "received", "materialsReceivedAt" to ts, "updatedAt" to ts))
-    logEvent(id, "استلم الكادر $crew المواد")
+        .addOnSuccessListener { logEvent(id, "استلم الكادر $crew المواد") }
+        .alertOnFail("تأكيد استلام المواد")
 }
 
 /** القسم يعتمد إنجاز الكادر فيصل المواطن */
@@ -154,7 +167,8 @@ fun approveCompletion(id: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
         .update(mapOf("status" to "resolved", "approvedAt" to ts, "updatedAt" to ts))
-    logEvent(id, "اعتمد القسم الإنجاز وأُرسل للمواطن")
+        .addOnSuccessListener { logEvent(id, "اعتمد القسم الإنجاز وأُرسل للمواطن") }
+        .alertOnFail("اعتماد الإنجاز")
 }
 
 /** القسم يعيد العمل للكادر مع ملاحظة */
@@ -162,7 +176,8 @@ fun returnToCrew(id: String, note: String) {
     val ts = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id)
         .update(mapOf("status" to "in_progress", "returnNote" to note, "returnedAt" to ts, "updatedAt" to ts))
-    logEvent(id, "أرجع الإنجاز للكادر — $note")
+        .addOnSuccessListener { logEvent(id, "أرجع الإنجاز للكادر — $note") }
+        .alertOnFail("إرجاع الإنجاز")
 }
 
 /** تعذّر العمل: يُخلي الكادر الشكوى فتعود للقسم مع السبب (دفعة واحدة مع السجل) */
@@ -191,8 +206,11 @@ fun setStatus(id: String, status: String, reply: String) {
     if (status == "in_progress") m["startedAt"] = FieldValue.serverTimestamp()
     if (status == "resolved") m["resolvedAt"] = FieldValue.serverTimestamp()
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
-    logEvent(id, (if (status == "resolved") "أنهى الشكوى (تم الحل)" else "بدأ المعالجة") +
-        (if (reply.isNotBlank()) " — الرد: $reply" else ""))
+        .addOnSuccessListener {
+            logEvent(id, (if (status == "resolved") "أنهى الشكوى (تم الحل)" else "بدأ المعالجة") +
+                (if (reply.isNotBlank()) " — الرد: $reply" else ""))
+        }
+        .alertOnFail("حفظ الحالة")
 }
 
 /** اسم موضوع الإشعارات للقسم (ترميز سداسي لأن الأسماء العربية غير مسموحة في أسماء المواضيع) */
@@ -207,7 +225,8 @@ fun markArrived(id: String, status: String, crew: String) {
     val m = mutableMapOf<String, Any>("arrivedAt" to ts, "updatedAt" to ts)
     if (status == "routed") { m["status"] = "in_progress"; m["startedAt"] = ts }
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
-    logEvent(id, "وصل الكادر $crew إلى الموقع")
+        .addOnSuccessListener { logEvent(id, "وصل الكادر $crew إلى الموقع") }
+        .alertOnFail("تسجيل الوصول")
 }
 
 fun signOutStaff(depts: List<String>, crew: String = "") {
@@ -281,10 +300,19 @@ fun sendReport(id: String, branch: String, repairable: Boolean, materials: Strin
             "materials" to (if (repairable) materials else ""),
             "assessedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp()
         )
-    )
-    logEvent(id, "أرسل تقرير الصيانة: " + (if (repairable) "ممكن صيانتها" else "غير ممكن") +
-        (if (branch.isNotBlank()) " (الفرع: $branch)" else "") +
-        (if (repairable && materials.isNotBlank()) " — المواد: $materials" else ""))
+    ).addOnSuccessListener {
+        logEvent(id, "أرسل تقرير الصيانة: " + (if (repairable) "ممكن صيانتها" else "غير ممكن") +
+            (if (branch.isNotBlank()) " (الفرع: $branch)" else "") +
+            (if (repairable && materials.isNotBlank()) " — المواد: $materials" else ""))
+    }.alertOnFail("حفظ التقرير")
+}
+
+/** موظف القسم يحدد الفرع المسؤول دون إرسال تقرير الصيانة (التقرير من اختصاص الكادر) */
+fun setBranch(id: String, branch: String) {
+    FirebaseFirestore.getInstance().collection("complaints").document(id)
+        .update(mapOf("branch" to branch, "updatedAt" to FieldValue.serverTimestamp()))
+        .addOnSuccessListener { logEvent(id, "حدّد الفرع المسؤول: $branch") }
+        .alertOnFail("حفظ الفرع")
 }
 
 /** الفروع: مصفوفة branches، أو نص مفصول بفواصل في branches، أو فرع واحد في الحقل branch */
@@ -306,7 +334,8 @@ fun assignCrew(id: String, crew: String, status: String) {
     )
     if (status == "routed") m["status"] = "in_progress"
     FirebaseFirestore.getInstance().collection("complaints").document(id).update(m)
-    logEvent(id, "أسند الشكوى إلى الكادر: $crew")
+        .addOnSuccessListener { logEvent(id, "أسند الشكوى إلى الكادر: $crew") }
+        .alertOnFail("إسناد الكادر")
 }
 
 /** الكوادر: مصفوفة crews، أو نص مفصول بفواصل في crews، أو كادر واحد في الحقل crew */
@@ -323,6 +352,7 @@ fun readCrews(doc: DocumentSnapshot): List<String> {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        appCtx = applicationContext
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme {
@@ -561,6 +591,11 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
     var blockReason by rememberSaveable(c.id) { mutableStateOf("") }
     var showBlock by rememberSaveable(c.id) { mutableStateOf(false) }
     var blocking by remember { mutableStateOf(false) }
+    var showDirect by rememberSaveable(c.id) { mutableStateOf(false) }
+    // الكادر يكتب تقرير الكشف ويُنجز العمل؛ موظف القسم يسند ويجهّز المواد ويعتمد.
+    // وعند عدم وجود كادر مُسنَد يعمل موظف القسم كل شيء بنفسه كما كان.
+    val canReport = crewMode || c.crew.isBlank()
+    val canComplete = crewMode || c.crew.isBlank() || showDirect
     var history by remember { mutableStateOf(listOf<String>()) }
     DisposableEffect(c.id) {
         val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.US)
@@ -692,8 +727,8 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                             onClick = { assignCrew(c.id, crew, c.status); onClose() }
                         ) { Text(if (c.crew.isBlank()) "إسناد للكادر" else "تغيير الكادر") }
                     }
-                    Text("تقرير الصيانة للمدير", style = MaterialTheme.typography.titleSmall)
-                    if (branches.isNotEmpty()) {
+                    Text(if (canReport) "تقرير الصيانة للمدير" else "تقرير الصيانة", style = MaterialTheme.typography.titleSmall)
+                    if (!crewMode && branches.isNotEmpty()) {
                         Text("الفرع المسؤول")
                         branches.forEach { b ->
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { branch = b }) {
@@ -702,6 +737,8 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                             }
                         }
                     }
+                    if (!canReport) Text("تقرير الكادر: " + (when (c.repairable) { true -> "✅ ممكن صيانتها"; false -> "❌ غير ممكن صيانتها"; else -> "⏳ بانتظار تقرير الكادر" }))
+                    if (canReport) {
                     Text("هل يمكن صيانتها؟")
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { repairable = true }) {
                         RadioButton(selected = repairable == true, onClick = { repairable = true })
@@ -714,6 +751,8 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                     if (repairable == true) {
                         OutlinedTextField(materials, { materials = it }, label = { Text("المواد المطلوبة للصيانة") }, modifier = Modifier.fillMaxWidth())
                     }
+                    }
+                    if (canComplete) {
                     Text("الأعمال المنجزة", style = MaterialTheme.typography.titleSmall)
                     Text(if (crewMode) "عند انتهاء العمل أرفق صورة بعد الصيانة (اختياري) ثم أرسل الإنجاز؛ يعتمده القسم ثم يصل المواطن." else "عند انتهاء العمل أرفق صورة بعد الصيانة (اختياري) ثم أرسل الإنجاز للمواطن والمدير.", style = MaterialTheme.typography.bodySmall)
                     val shown = if (pendingAfter.isNotEmpty()) pendingAfter else c.afterB64
@@ -740,6 +779,9 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         }
                     }) { Text(if (sending) "جارٍ الإرسال..." else if (crewMode) "📨 إرسال الإنجاز لاعتماد القسم" else "✅ إرسال الإنجاز للمواطن والمدير") }
                     if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
+                    } else if (!crewMode) {
+                        OutlinedButton(onClick = { showDirect = true }) { Text("إنهاء مباشر دون الكادر (استثنائي)") }
+                    }
                 }
                 if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
                 if (history.isNotEmpty()) {
@@ -751,15 +793,16 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
         confirmButton = {
             if (done || pending) TextButton(onClick = onClose) { Text("إغلاق") }
             else Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
+                if (canReport) Button(onClick = {
                     val r = repairable
                     when {
                         r == null -> err = "اختر: ممكن صيانتها أو غير ممكن"
-                        branches.isNotEmpty() && branch.isBlank() -> err = "اختر الفرع المسؤول"
+                        !crewMode && branches.isNotEmpty() && branch.isBlank() -> err = "اختر الفرع المسؤول"
                         r && materials.isBlank() -> err = "اكتب المواد المطلوبة للصيانة"
                         else -> { sendReport(c.id, branch, r, materials.trim()); onClose() }
                     }
                 }) { Text("إرسال التقرير للمدير") }
+                else if (branches.isNotEmpty()) OutlinedButton(enabled = branch.isNotBlank() && branch != c.branch, onClick = { setBranch(c.id, branch); onClose() }) { Text("حفظ الفرع") }
                 if (c.status == "routed" && !crewMode) Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
             }
         },
