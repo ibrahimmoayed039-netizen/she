@@ -158,7 +158,7 @@ async function connect() {
             resolvedMs: x.status !== 'resolved' ? 0 : (x.resolvedAt ? x.resolvedAt.toMillis() : (x.updatedAt ? x.updatedAt.toMillis() : 0)),
             confirmed: x.confirmed === true, reopenCount: x.reopenCount || 0, reopenReason: x.reopenReason || '',
             reopenedMs: x.reopenedAt ? x.reopenedAt.toMillis() : 0,
-            category: x.category || '', aiDepartment: x.aiDepartment || '',
+            category: x.category || '', aiDepartment: x.aiDepartment || '', area: x.area || '', sector: x.sector || '',
             materialsReady: x.materialsReady === true, materialsReadyMs: x.materialsReadyAt ? x.materialsReadyAt.toMillis() : 0,
             arrivedMs: x.arrivedAt ? x.arrivedAt.toMillis() : 0,
             submittedMs: tms(x.submittedAt), approvedMs: tms(x.approvedAt), returnNote: x.returnNote || '', returnedMs: tms(x.returnedAt),
@@ -325,6 +325,10 @@ function syncConfig() {
   if (!db) return;
   db.collection('config').doc('departments').set({ list: store.get('departments') || [] })
     .catch((e) => log('تعذّر نشر قائمة الأقسام: ' + e.message));
+  // قواطع ومناطق كل قسم ليختار منها المواطن حيّه عند الإرسال
+  db.collection('config').doc('areas').set({
+    list: (store.get('sectors') || []).map((x) => ({ dept: x.dept, name: x.name, areas: x.areas || [] })),
+  }).catch((e) => log('تعذّر نشر قائمة الأحياء: ' + e.message));
 }
 
 async function analyze(id, force = false) {

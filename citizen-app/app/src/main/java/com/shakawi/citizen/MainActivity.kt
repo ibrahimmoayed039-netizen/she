@@ -227,6 +227,21 @@ fun NewTab(onSent: () -> Unit) {
     // أنواع الشكاوى (الأقسام) من برنامج الحاسوب، لتوجيه أدق وأسرع
     var cats by remember { mutableStateOf<List<String>>(emptyList()) }
     var category by remember { mutableStateOf("") }
+    // الأحياء: (القسم، القاطع، المنطقة) من برنامج الحاسوب، فيختار المواطن حيّه بدل أن يخمّنه البرنامج من النص
+    var areaOpts by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
+    var area by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    LaunchedEffect(Unit) {
+        try {
+            val ac = FirebaseFirestore.getInstance().collection("config").document("areas").get().await()
+            areaOpts = (ac.get("list") as? List<*>)?.flatMap { e ->
+                val m = e as? Map<*, *> ?: return@flatMap emptyList<Triple<String, String, String>>()
+                val d = (m["dept"] as? String)?.trim() ?: ""
+                val s = (m["name"] as? String)?.trim() ?: ""
+                (m["areas"] as? List<*>)?.mapNotNull { (it as? String)?.trim()?.takeIf { a -> a.isNotEmpty() } }
+                    ?.map { a -> Triple(d, s, a) } ?: emptyList()
+            } ?: emptyList()
+        } catch (e: Exception) { }
+    }
     LaunchedEffect(Unit) {
         try {
             val dc = FirebaseFirestore.getInstance().collection("config").document("departments").get().await()
@@ -267,6 +282,20 @@ fun NewTab(onSent: () -> Unit) {
                 }
             }
         }
+        // الأحياء المعروضة: أحياء القسم المختار، أو كل الأحياء إن لم يُختر نوع
+        val shownAreas = areaOpts.filter { category.isBlank() || it.first == category }.distinctBy { it.third }
+        // اختيار الحي إجباري متى وُجدت أحياء مُعرَّفة (ولا يُحسب اختيار قديم لا ينتمي للقائمة المعروضة)
+        val areaOk = shownAreas.isEmpty() || (area != null && shownAreas.any { it.third == area!!.third })
+        if (shownAreas.isNotEmpty()) {
+            Text("الحي / المنطقة (إجباري) *", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                shownAreas.forEach { o ->
+                    if (area?.third == o.third) Button(onClick = { area = null }) { Text("✓ ${o.third}") }
+                    else OutlinedButton(onClick = { area = o }) { Text(o.third) }
+                }
+            }
+        }
+        if (!areaOk) Text("اختر الحي / المنطقة لإرسال الشكوى", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = { pick.launch("image/*") }) {
             Text(if (img == null) "إرفاق صورة" else "تم اختيار صورة ✓ (تغيير)")
         }
@@ -278,7 +307,7 @@ fun NewTab(onSent: () -> Unit) {
             }
         ) { Text(if (locBusy) "جارٍ تحديد الموقع..." else if (loc == null) "📍 إرفاق موقعي الحالي" else "📍 تم تحديد الموقع ✓ (تحديث)") }
         Button(
-            enabled = !busy && title.isNotBlank() && text.isNotBlank(),
+            enabled = !busy && title.isNotBlank() && text.isNotBlank() && areaOk,
             modifier = Modifier.fillMaxWidth(),
             onClick = {
                 scope.launch {
@@ -301,6 +330,7 @@ fun NewTab(onSent: () -> Unit) {
                         )
                         loc?.let { data["lat"] = it.first; data["lng"] = it.second }
                         if (category.isNotBlank()) data["category"] = category
+                        area?.takeIf { a -> shownAreas.any { it.third == a.third } }?.let { data["area"] = it.third; data["sector"] = it.second }
                         // رمز الإشعارات ليصل المواطن تنبيه عند تغيّر حالة شكواه
                         try {
                             withTimeoutOrNull(4000) { FirebaseMessaging.getInstance().token.await() }
@@ -314,7 +344,7 @@ fun NewTab(onSent: () -> Unit) {
                             if (sent != null) "تم إرسال الشكوى" else "سيتم الإرسال عند توفر الإنترنت",
                             Toast.LENGTH_LONG
                         ).show()
-                        title = ""; text = ""; img = null; loc = null; category = ""
+                        title = ""; text = ""; img = null; loc = null; category = ""; area = null
                         onSent()
                     } catch (e: Exception) {
                         Toast.makeText(ctx, e.message ?: "حدث خطأ", Toast.LENGTH_LONG).show()

@@ -223,3 +223,5 @@ details.grp>.card:hover{transform:none}
 .area-row:last-child{border-bottom:0}
 .area-row>b{min-width:150px;font-size:13.5px}
 .area-row.miss{background:var(--warn-bg);border-radius:10px}
+
+.sec-card .sec-del-btn{margin-top:10px;font-size:12px;padding:5px 12px;color:var(--danger)}
