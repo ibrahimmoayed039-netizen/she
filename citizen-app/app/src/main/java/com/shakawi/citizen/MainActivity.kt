@@ -33,7 +33,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -75,6 +79,26 @@ fun trackLine(c: Complaint): String {
     )
     val cur = steps.indexOfFirst { !it.second }
     return steps.mapIndexed { i, s -> (if (s.second) "✔ " else if (i == cur) "⏳ " else "○ ") + s.first }.joinToString(" › ")
+}
+
+fun trackSteps(c: Complaint): List<Pair<String, Boolean>> = listOf(
+    "استُلمت" to true,
+    "وُجِّهت للقسم" to (c.status != "new"),
+    "أُسندت لكادر" to (c.hasCrew || c.status == "resolved"),
+    "وصل الكادر" to (c.arrived || c.status == "resolved"),
+    "أُنجزت" to (c.status == "resolved")
+)
+
+fun statusColor(s: String): Color = when (s) {
+    "routed" -> Sk.Teal
+    "in_progress", "pending_review" -> Sk.Amber
+    "resolved" -> Sk.Green
+    else -> Sk.Slate
+}
+
+@Composable
+fun StatusPill(s: String) {
+    Pill(statusAr(s), statusColor(s), if (s == "in_progress" || s == "pending_review") Sk.Ink else Color.White)
 }
 
 fun statusAr(s: String) = when (s) {
@@ -164,7 +188,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                MaterialTheme {
+                ShakawiTheme {
                     var ready by remember { mutableStateOf(FbConfig.init(applicationContext)) }
                     if (ready) {
                         val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -196,10 +220,10 @@ fun App() {
     }
     var tab by remember { mutableIntStateOf(0) }
     val tabs = listOf("✏️" to "شكوى جديدة", "📋" to "شكاواي", "⚙️" to "الإعدادات")
-    Scaffold(bottomBar = {
-        NavigationBar {
+    Scaffold(containerColor = Color.Transparent, bottomBar = {
+        DepthDock {
             tabs.forEachIndexed { i, t ->
-                NavigationBarItem(
+                DockItem(
                     selected = tab == i, onClick = { tab = i },
                     icon = { Text(t.first) }, label = { Text(t.second) }
                 )
@@ -267,19 +291,20 @@ fun NewTab(onSent: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("شكوى جديدة", style = MaterialTheme.typography.headlineSmall)
-        OutlinedTextField(title, { title = it }, label = { Text("عنوان الشكوى") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(
-            text, { text = it }, label = { Text("تفاصيل الشكوى") },
-            modifier = Modifier.fillMaxWidth().height(160.dp)
-        )
+        ScreenTitle("شكوى جديدة", "صِف المشكلة وسنوجّهها للجهة المختصة")
+        DepthCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                DepthField(title, { title = it }, label = { Text("عنوان الشكوى") }, modifier = Modifier.fillMaxWidth())
+                DepthField(
+                    text, { text = it }, label = { Text("تفاصيل الشكوى") },
+                    modifier = Modifier.fillMaxWidth().height(160.dp)
+                )
+            }
+        }
         if (cats.isNotEmpty()) {
-            Text("نوع الشكوى (اختياري)", style = MaterialTheme.typography.titleSmall)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                cats.forEach { k ->
-                    if (category == k) Button(onClick = { category = "" }) { Text("✓ $k") }
-                    else OutlinedButton(onClick = { category = k }) { Text(k) }
-                }
+            SectionLabel("نوع الشكوى (اختياري)")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 8.dp, horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                cats.forEach { k -> ChoiceChip(k, category == k, onClick = { category = if (category == k) "" else k }) }
             }
         }
         // الأحياء المعروضة: أحياء القسم المختار، أو كل الأحياء إن لم يُختر نوع
@@ -287,26 +312,23 @@ fun NewTab(onSent: () -> Unit) {
         // اختيار الحي إجباري متى وُجدت أحياء مُعرَّفة (ولا يُحسب اختيار قديم لا ينتمي للقائمة المعروضة)
         val areaOk = shownAreas.isEmpty() || (area != null && shownAreas.any { it.third == area!!.third })
         if (shownAreas.isNotEmpty()) {
-            Text("الحي / المنطقة (إجباري) *", style = MaterialTheme.typography.titleSmall)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                shownAreas.forEach { o ->
-                    if (area?.third == o.third) Button(onClick = { area = null }) { Text("✓ ${o.third}") }
-                    else OutlinedButton(onClick = { area = o }) { Text(o.third) }
-                }
+            SectionLabel("الحي / المنطقة (إجباري)")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 8.dp, horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                shownAreas.forEach { o -> ChoiceChip(o.third, area?.third == o.third, onClick = { area = if (area?.third == o.third) null else o }) }
             }
         }
-        if (!areaOk) Text("اختر الحي / المنطقة لإرسال الشكوى", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        OutlinedButton(onClick = { pick.launch("image/*") }) {
-            Text(if (img == null) "إرفاق صورة" else "تم اختيار صورة ✓ (تغيير)")
+        if (!areaOk) Alert("اختر الحي / المنطقة لإرسال الشكوى")
+        GhostButton(onClick = { pick.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (img == null) "📷 إرفاق صورة" else "📷 تم اختيار صورة ✓ (تغيير)")
         }
-        OutlinedButton(
-            enabled = !locBusy,
+        GhostButton(
+            enabled = !locBusy, modifier = Modifier.fillMaxWidth(),
             onClick = {
                 if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) fetchLoc()
                 else locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         ) { Text(if (locBusy) "جارٍ تحديد الموقع..." else if (loc == null) "📍 إرفاق موقعي الحالي" else "📍 تم تحديد الموقع ✓ (تحديث)") }
-        Button(
+        DepthButton(
             enabled = !busy && title.isNotBlank() && text.isNotBlank() && areaOk,
             modifier = Modifier.fillMaxWidth(),
             onClick = {
@@ -375,25 +397,28 @@ fun MyTab(uid: String?) {
         AlertDialog(
             onDismissRequest = { reopenId = null },
             title = { Text("لماذا لم تُحل المشكلة؟") },
-            text = { OutlinedTextField(reason, { reason = it }, label = { Text("اكتب السبب (اختياري)") }, modifier = Modifier.fillMaxWidth()) },
-            confirmButton = { Button(onClick = { reopenComplaint(rid, reopenOld, reason); reopenId = null; reason = "" }) { Text("إعادة فتح الشكوى") } },
-            dismissButton = { TextButton(onClick = { reopenId = null }) { Text("إلغاء") } }
+            text = { DepthField(reason, { reason = it }, label = { Text("اكتب السبب (اختياري)") }, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = { DepthButton(onClick = { reopenComplaint(rid, reopenOld, reason); reopenId = null; reason = "" }) { Text("إعادة فتح الشكوى") } },
+            dismissButton = { LinkButton(onClick = { reopenId = null }) { Text("إلغاء") } }
         )
     }
     if (list.isEmpty()) {
-        Box(Modifier.fillMaxSize().padding(24.dp)) { Text("لا توجد شكاوى بعد") }
+        EmptyState("📋", "لا توجد شكاوى بعد", "أرسل أول شكوى من تبويب «شكوى جديدة» وتابع حالتها هنا")
         return
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { ScreenTitle("شكاواي", "${list.size} شكوى") }
         items(list, key = { it.id }) { c ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(c.title, style = MaterialTheme.typography.titleMedium)
-                    Text("الحالة: " + statusAr(c.status), color = MaterialTheme.colorScheme.primary)
-                    if (c.department.isNotBlank()) Text("القسم: " + c.department)
-                    Text(trackLine(c), style = MaterialTheme.typography.bodySmall)
+            DepthCard(Modifier.fillMaxWidth(), accent = statusColor(c.status)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(c.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        StatusPill(c.status)
+                    }
+                    if (c.department.isNotBlank()) Text("القسم: " + c.department, style = MaterialTheme.typography.bodySmall, color = Sk.Muted)
+                    Tracker(trackSteps(c))
                     Text(c.text)
-                    if (c.reply.isNotBlank()) Text("رد الجهة المختصة: " + c.reply, style = MaterialTheme.typography.bodyMedium)
+                    if (c.reply.isNotBlank()) Note(c.reply, tone = Sk.Teal, title = "رد الجهة المختصة")
                     if (c.afterB64.isNotEmpty()) {
                         val ab = remember(c.id, c.afterB64.length) {
                             try {
@@ -403,23 +428,23 @@ fun MyTab(uid: String?) {
                         }
                         if (ab != null) {
                             Text("صورة بعد الصيانة:")
-                            Image(bitmap = ab, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                            Image(bitmap = ab, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)))
                         }
                     }
-                    if (c.reopenCount > 0) Text("🔁 أُعيد فتحها " + c.reopenCount + " مرة")
+                    if (c.reopenCount > 0) Note("🔁 أُعيد فتحها " + c.reopenCount + " مرة", tone = Sk.Orange)
                     if (c.status == "resolved") {
                         if (!c.confirmed && c.rating == 0L) {
                             Text("هل تم حل المشكلة فعلاً؟", style = MaterialTheme.typography.titleSmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { confirmDone(c.id) }) { Text("✅ نعم، تم الحل") }
-                                if (c.reopenCount < 3) OutlinedButton(onClick = { reopenId = c.id; reopenOld = c.reopenCount }) { Text("❌ لا، لم تُحل") }
+                                DepthButton(onClick = { confirmDone(c.id) }, modifier = Modifier.weight(1f)) { Text("✅ نعم، تم الحل") }
+                                if (c.reopenCount < 3) GhostButton(onClick = { reopenId = c.id; reopenOld = c.reopenCount }, modifier = Modifier.weight(1f)) { Text("❌ لا، لم تُحل") }
                             }
                         } else if (c.rating > 0) Text("تقييمك: " + "⭐".repeat(c.rating.toInt()))
                         else {
                             Text("قيّم الخدمة:")
-                            Row {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 (1..5).forEach { n ->
-                                    TextButton(onClick = { rateComplaint(c.id, n) }) { Text("$n⭐") }
+                                    ChoiceChip("$n ⭐", false, onClick = { rateComplaint(c.id, n) })
                                 }
                             }
                         }
@@ -436,12 +461,15 @@ fun SettingsTab() {
     val prefs = remember { ctx.getSharedPreferences("p", Context.MODE_PRIVATE) }
     var name by remember { mutableStateOf(prefs.getString("name", "") ?: "") }
     var phone by remember { mutableStateOf(prefs.getString("phone", "") ?: "") }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("الإعدادات", style = MaterialTheme.typography.headlineSmall)
-        Text("بياناتك تُحفظ على جهازك وتُرفق مع شكاواك لتسهيل التواصل.")
-        OutlinedTextField(name, { name = it }, label = { Text("الاسم (اختياري)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(phone, { phone = it }, label = { Text("رقم الهاتف (اختياري)") }, modifier = Modifier.fillMaxWidth())
-        Button(onClick = {
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        ScreenTitle("الإعدادات", "بياناتك تُحفظ على جهازك وتُرفق مع شكاواك لتسهيل التواصل.")
+        DepthCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                DepthField(name, { name = it }, label = { Text("الاسم (اختياري)") }, modifier = Modifier.fillMaxWidth())
+                DepthField(phone, { phone = it }, label = { Text("رقم الهاتف (اختياري)") }, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        DepthButton(onClick = {
             prefs.edit().putString("name", name).putString("phone", phone).apply()
             Toast.makeText(ctx, "تم الحفظ", Toast.LENGTH_SHORT).show()
         }, modifier = Modifier.fillMaxWidth()) { Text("حفظ") }

@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -74,6 +75,25 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getString("materialsStatus") ?: "", d.getString("materialsNote") ?: "", d.getString("returnNote") ?: "",
     d.getString("blockedReason") ?: "", d.getString("blockedBy") ?: ""
 )
+
+fun priorityColor(c: Complaint): Color = when {
+    c.reopenCount > 0 && c.status != "resolved" -> Sk.Orange
+    c.priority == "urgent" -> Sk.Coral
+    c.priority == "high" -> Sk.Orange
+    c.priority == "low" -> Sk.Slate
+    else -> Sk.Teal
+}
+
+@Composable
+fun PriorityPill(p: String) {
+    when (p) {
+        "urgent" -> Pill("🚨 " + priorityAr(p), Sk.Coral)
+        "high" -> Pill(priorityAr(p), Sk.Orange, Sk.Ink)
+        "medium" -> Pill(priorityAr(p), Sk.Teal)
+        "low" -> Pill(priorityAr(p), Sk.Slate)
+        else -> { }
+    }
+}
 
 fun priorityAr(p: String): String = when (p) {
     "urgent" -> "عاجلة"
@@ -355,7 +375,7 @@ class MainActivity : ComponentActivity() {
         appCtx = applicationContext
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                MaterialTheme {
+                ShakawiTheme {
                     var ready by remember { mutableStateOf(FbConfig.init(applicationContext)) }
                     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
                     LaunchedEffect(Unit) {
@@ -388,34 +408,43 @@ fun Login() {
     var pass by remember { mutableStateOf("") }
     var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp, androidx.compose.ui.Alignment.CenterVertically)
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically)
     ) {
-        Text("تسجيل دخول الموظف", style = MaterialTheme.typography.headlineSmall)
-        OutlinedTextField(email, { email = it }, label = { Text("البريد الإلكتروني") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(
-            pass, { pass = it }, label = { Text("كلمة المرور") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth()
-        )
-        if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
-        Button(
-            enabled = !busy && email.isNotBlank() && pass.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                scope.launch {
-                    busy = true; err = ""
-                    try {
-                        FirebaseAuth.getInstance().signInWithEmailAndPassword(email.trim(), pass).await()
-                    } catch (e: Exception) {
-                        err = "فشل تسجيل الدخول، تحقق من البيانات والإنترنت"
+        Medallion(104.dp)
+        Text("شكاوي", style = MaterialTheme.typography.headlineSmall)
+        Text("بوابة الموظفين والكوادر الميدانية", style = MaterialTheme.typography.bodyMedium, color = Sk.Muted)
+        Spacer(Modifier.height(4.dp))
+        DepthCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionLabel("تسجيل الدخول")
+                DepthField(email, { email = it }, label = { Text("البريد الإلكتروني") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                DepthField(
+                    pass, { pass = it }, label = { Text("كلمة المرور") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth()
+                )
+                if (err.isNotBlank()) Alert(err)
+                DepthButton(
+                    enabled = !busy && email.isNotBlank() && pass.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            busy = true; err = ""
+                            try {
+                                FirebaseAuth.getInstance().signInWithEmailAndPassword(email.trim(), pass).await()
+                            } catch (e: Exception) {
+                                err = "فشل تسجيل الدخول، تحقق من البيانات والإنترنت"
+                            }
+                            busy = false
+                        }
                     }
-                    busy = false
-                }
+                ) { Text(if (busy) "جارٍ الدخول..." else "دخول") }
+                if (!FbConfig.hasEmbedded(ctx)) LinkButton(onClick = { FbConfig.reset(ctx) }) { Text("تغيير إعدادات الاتصال بقاعدة البيانات") }
             }
-        ) { Text(if (busy) "جارٍ الدخول..." else "دخول") }
-        val ctx = androidx.compose.ui.platform.LocalContext.current
-        TextButton(onClick = { FbConfig.reset(ctx) }) { Text("تغيير إعدادات الاتصال بقاعدة البيانات") }
+        }
     }
 }
 
@@ -456,10 +485,10 @@ fun Home(uid: String, email: String) {
     }
     val d = depts
     when {
-        !loaded -> Box(Modifier.fillMaxSize().padding(24.dp)) { Text("جارٍ التحميل...") }
-        d == null -> Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("هذا الحساب غير مرتبط بأي قسم. تواصل مع الإدارة.")
-            Button(onClick = { FirebaseAuth.getInstance().signOut() }) { Text("تسجيل الخروج") }
+        !loaded -> EmptyState("⏳", "جارٍ التحميل...")
+        d == null -> Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)) {
+            Alert("هذا الحساب غير مرتبط بأي قسم. تواصل مع الإدارة.")
+            DepthButton(onClick = { FirebaseAuth.getInstance().signOut() }) { Text("تسجيل الخروج") }
         }
         else -> Main(d, branches, crews, crewName, email)
     }
@@ -496,16 +525,16 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
     }
 
     val statuses = listOf("routed", "in_progress", "pending_review", "resolved")
-    val labels = listOf("📥" to "الجديدة", "🔧" to "قيد المعالجة", "🔎" to "للاعتماد", "✅" to "المنجزة", "👤" to "حسابي")
+    val labels = listOf("📥" to "الجديدة", "🔧" to "جارية", "🔎" to "للاعتماد", "✅" to "المنجزة", "👤" to "حسابي")
 
-    Scaffold(bottomBar = {
-        NavigationBar {
+    Scaffold(containerColor = Color.Transparent, bottomBar = {
+        DepthDock {
             labels.forEachIndexed { i, t ->
                 val n = if (i < 4) list.count { it.status == statuses[i] } else 0
-                NavigationBarItem(
+                DockItem(
                     selected = tab == i, onClick = { tab = i },
                     icon = { Text(t.first) },
-                    label = { Text(if (i < 4) "${t.second} ($n)" else t.second) }
+                    label = { Text(t.second, maxLines = 1) }, badge = if (i < 3) n else 0
                 )
             }
         }
@@ -515,29 +544,30 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                 val shown = list.filter { it.status == statuses[tab] }
                 if (shown.isEmpty()) {
                     Box(Modifier.fillMaxSize().padding(24.dp)) {
-                        if (loadErr.isNotBlank()) Text(
-                            "تعذّر تحميل الشكاوى: " + (if (loadErr.contains("PERMISSION_DENIED")) "رُفض من الخادم. انشر قواعد Firestore الأحدث (Rules ← Publish)، وتأكد أن مستند حسابك في staff فيه القسم (department) وللكادر role = crew وcrew باسمه." else loadErr),
-                            color = MaterialTheme.colorScheme.error
-                        ) else Text("لا توجد شكاوى هنا")
+                        if (loadErr.isNotBlank()) Alert(
+                            "تعذّر تحميل الشكاوى: " + (if (loadErr.contains("PERMISSION_DENIED")) "رُفض من الخادم. انشر قواعد Firestore الأحدث (Rules ← Publish)، وتأكد أن مستند حسابك في staff فيه القسم (department) وللكادر role = crew وcrew باسمه." else loadErr)
+                        ) else EmptyState("📭", "لا توجد شكاوى هنا", "ستظهر الشكاوى في هذه القائمة فور وصولها")
                     }
                 } else LazyColumn(
                     Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    if (loadErr.isNotBlank()) item { Text("⚠️ تعذّر تحديث الشكاوى: $loadErr", color = MaterialTheme.colorScheme.error) }
+                    item { ScreenTitle(listOf("الشكاوى الجديدة", "قيد المعالجة", "بانتظار الاعتماد", "المنجزة")[tab], "${shown.size} شكوى" + (if (crewName.isNotBlank()) " — مُسندة إليك" else "")) }
+                    if (loadErr.isNotBlank()) item { Alert("⚠️ تعذّر تحديث الشكاوى: $loadErr") }
                     items(shown, key = { it.id }) { c ->
-                        Card(Modifier.fillMaxWidth().clickable { selectedId = c.id }) {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(c.title, style = MaterialTheme.typography.titleMedium)
-                                Text(if (c.priority == "urgent") "🚨 الأولوية: عاجلة" else "الأولوية: " + priorityAr(c.priority),
-                                    color = if (c.priority == "urgent") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                                if (c.reopenCount > 0 && c.status != "resolved") Text("🔁 أعاد المواطن فتحها (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — " + c.reopenReason else ""), color = MaterialTheme.colorScheme.error)
+                        DepthCard(Modifier.fillMaxWidth(), accent = priorityColor(c), onClick = { selectedId = c.id }) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(c.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                    PriorityPill(c.priority)
+                                }
+                                if (c.reopenCount > 0 && c.status != "resolved") Alert("🔁 أعاد المواطن فتحها (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — " + c.reopenReason else ""))
                                 if (c.crew.isNotBlank()) Text("🚧 الكادر: " + c.crew)
-                                if (c.returnNote.isNotBlank() && c.status == "in_progress") Text("↩️ أُعيد من القسم: " + c.returnNote, color = MaterialTheme.colorScheme.error)
-                                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Text("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason, color = MaterialTheme.colorScheme.error)
-                                Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
-                                if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved" && c.status != "pending_review" && matStatus(c) != "received") Text("📦 المواد: " + matStatusAr(matStatus(c)), color = if (matStatus(c) == "ready") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                                if (c.dupTitle.isNotBlank()) Text("🔁 مكررة: يوجد بلاغ سابق مماثل", color = MaterialTheme.colorScheme.error)
+                                if (c.returnNote.isNotBlank() && c.status == "in_progress") Alert("↩️ أُعيد من القسم: " + c.returnNote)
+                                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Alert("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason)
+                                Text(stageLine(c), style = MaterialTheme.typography.bodySmall, color = Sk.Muted)
+                                if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved" && c.status != "pending_review" && matStatus(c) != "received") Note("📦 المواد: " + matStatusAr(matStatus(c)), tone = if (matStatus(c) == "ready") Sk.Teal else Sk.Coral)
+                                if (c.dupTitle.isNotBlank()) Alert("🔁 مكررة: يوجد بلاغ سابق مماثل")
                                 if (c.dupCount > 0) Text("🔁 تكررت " + c.dupCount + " مرة")
                                 if (c.lat != null) Text("📍 لها موقع على الخريطة")
                                 Text(if (c.summary.isNotBlank()) c.summary else c.text, maxLines = 3)
@@ -546,8 +576,9 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                     }
                 }
             } else {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("حسابي", style = MaterialTheme.typography.headlineSmall)
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    ScreenTitle("حسابي", if (crewName.isNotBlank()) "حساب كادر ميداني" else "حساب موظف قسم")
+                    DepthCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (myDisplayName.isNotBlank()) Text("الاسم: $myDisplayName")
                     Text("البريد: $email")
                     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -556,10 +587,11 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                     if (crewName.isNotBlank()) Text("🚧 حساب كادر: $crewName")
                     Text("الأقسام: " + depts.joinToString("، "))
                     Text("عدد الشكاوى الظاهرة لهذا الحساب: ${list.size}")
-                    if (loadErr.isNotBlank()) Text("⚠️ $loadErr", color = MaterialTheme.colorScheme.error)
+                    if (loadErr.isNotBlank()) Alert("⚠️ $loadErr")
                     if (branches.isNotEmpty()) Text("الفروع: " + branches.joinToString("، "))
                     if (crews.isNotEmpty()) Text("الكوادر: " + crews.joinToString("، "))
-                    Button(onClick = { signOutStaff(depts, crewName) }) { Text("تسجيل الخروج") }
+                    } }
+                    DepthButton(onClick = { signOutStaff(depts, crewName) }, modifier = Modifier.fillMaxWidth()) { Text("تسجيل الخروج") }
                 }
             }
         }
@@ -627,14 +659,14 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 Text("الأولوية: " + priorityAr(c.priority))
                 if (c.summary.isNotBlank()) Text("ملخص: " + c.summary)
                 if (c.crew.isNotBlank()) Text("🚧 مُسندة إلى: " + c.crew)
-                if (c.reopenCount > 0) Text("🔁 أعاد المواطن فتح الشكوى (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — السبب: " + c.reopenReason else ""), color = MaterialTheme.colorScheme.error)
+                if (c.reopenCount > 0) Alert("🔁 أعاد المواطن فتح الشكوى (" + c.reopenCount + ")" + (if (c.reopenReason.isNotBlank()) " — السبب: " + c.reopenReason else ""))
                 if (c.status == "resolved" && c.confirmed) Text("✔ أكّد المواطن أن المشكلة حُلّت")
-                if (c.dupTitle.isNotBlank()) Text("🔁 شكوى مكررة: يوجد بلاغ سابق مماثل («" + c.dupTitle + "»)", color = MaterialTheme.colorScheme.error)
+                if (c.dupTitle.isNotBlank()) Alert("🔁 شكوى مكررة: يوجد بلاغ سابق مماثل («" + c.dupTitle + "»)")
                 if (c.dupCount > 0) Text("🔁 تكررت هذه الشكوى " + c.dupCount + " مرة")
-                if (c.lat != null && c.lng != null) OutlinedButton(onClick = { openMap(ctx, c.lat, c.lng) }) { Text("📍 فتح موقع الشكوى على الخريطة") }
+                if (c.lat != null && c.lng != null) GhostButton(onClick = { openMap(ctx, c.lat, c.lng) }) { Text("📍 فتح موقع الشكوى على الخريطة") }
                 if (c.rating > 0) Text("تقييم المواطن: " + "⭐".repeat(c.rating.toInt()))
-                if (c.returnNote.isNotBlank() && c.status == "in_progress") Text("↩️ أُعيد إليك من القسم: " + c.returnNote, color = MaterialTheme.colorScheme.error)
-                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Text("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason + " — أسندها لكادر آخر أو اتخذ قراراً", color = MaterialTheme.colorScheme.error)
+                if (c.returnNote.isNotBlank() && c.status == "in_progress") Alert("↩️ أُعيد إليك من القسم: " + c.returnNote)
+                if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Alert("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason + " — أسندها لكادر آخر أو اتخذ قراراً")
                 Text(stageLine(c), style = MaterialTheme.typography.bodySmall)
                 if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved") {
                     val ms = matStatus(c)
@@ -642,16 +674,16 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                     Text("حالة المواد: " + matStatusAr(ms) + (if (ms == "partial" && c.materialsNote.isNotBlank()) " — الناقص: " + c.materialsNote else ""),
                         color = if (ms == "partial") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                     if (crewMode) {
-                        if (ms == "ready") Button(onClick = { markMaterialsReceived(c.id, c.crew); onClose() }) { Text("📥 استلمت المواد") }
+                        if (ms == "ready") DepthButton(onClick = { markMaterialsReceived(c.id, c.crew); onClose() }) { Text("📥 استلمت المواد") }
                         else if (ms != "received") Text("⏳ بانتظار تجهيز المواد من القسم")
                     } else if (ms != "ready" && ms != "received" && !pending) {
-                        if (ms == "requested") OutlinedButton(onClick = { setMaterialsStatus(c.id, "preparing", ""); onClose() }) { Text("⏳ قيد التجهيز") }
-                        OutlinedTextField(shortNote, { shortNote = it }, label = { Text("الناقص من المواد (للنقص الجزئي)") }, modifier = Modifier.fillMaxWidth())
-                        OutlinedButton(enabled = shortNote.isNotBlank(), onClick = { setMaterialsStatus(c.id, "partial", shortNote.trim()); onClose() }) { Text("⚠️ نقص جزئي") }
-                        Button(onClick = { markMaterialsReady(c.id); onClose() }) { Text("📦 تم تجهيز المواد") }
+                        if (ms == "requested") GhostButton(onClick = { setMaterialsStatus(c.id, "preparing", ""); onClose() }) { Text("⏳ قيد التجهيز") }
+                        DepthField(shortNote, { shortNote = it }, label = { Text("الناقص من المواد (للنقص الجزئي)") }, modifier = Modifier.fillMaxWidth())
+                        GhostButton(enabled = shortNote.isNotBlank(), onClick = { setMaterialsStatus(c.id, "partial", shortNote.trim()); onClose() }) { Text("⚠️ نقص جزئي") }
+                        DepthButton(onClick = { markMaterialsReady(c.id); onClose() }) { Text("📦 تم تجهيز المواد") }
                     }
                 }
-                if (c.repairable == false && c.status != "resolved") Text("🚫 التقرير: غير ممكن الصيانة — بانتظار قرار الإدارة", color = MaterialTheme.colorScheme.error)
+                if (c.repairable == false && c.status != "resolved") Alert("🚫 التقرير: غير ممكن الصيانة — بانتظار قرار الإدارة")
                 Text(c.text)
                 if (bmp != null) Image(bitmap = bmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
                 if (c.name.isNotBlank() || c.phone.isNotBlank()) Text("المواطن: ${c.name} ${c.phone}")
@@ -686,15 +718,15 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                     if (crewMode) {
                         Text("⏳ أُرسل الإنجاز، وسيصل المواطن بعد اعتماد القسم.")
                     } else {
-                        Button(onClick = { approveCompletion(c.id); onClose() }) { Text("✅ اعتماد وإرسال للمواطن") }
-                        OutlinedTextField(returnText, { returnText = it }, label = { Text("سبب الإرجاع للكادر") }, modifier = Modifier.fillMaxWidth())
-                        OutlinedButton(enabled = returnText.isNotBlank(), onClick = { returnToCrew(c.id, returnText.trim()); onClose() }) { Text("↩️ إرجاع للكادر لاستكمال العمل") }
+                        DepthButton(onClick = { approveCompletion(c.id); onClose() }) { Text("✅ اعتماد وإرسال للمواطن") }
+                        DepthField(returnText, { returnText = it }, label = { Text("سبب الإرجاع للكادر") }, modifier = Modifier.fillMaxWidth())
+                        GhostButton(enabled = returnText.isNotBlank(), onClick = { returnToCrew(c.id, returnText.trim()); onClose() }) { Text("↩️ إرجاع للكادر لاستكمال العمل") }
                     }
                 } else {
                     if (crewMode) {
                         if (c.arrivedMs > 0) Text("📍 وصلتَ إلى الموقع: " + SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(c.arrivedMs)))
-                        else Button(onClick = { markArrived(c.id, c.status, c.crew); onClose() }) { Text("📍 وصلت إلى الموقع") }
-                        OutlinedButton(onClick = { showBlock = !showBlock }) { Text("🚫 تعذّر العمل") }
+                        else DepthButton(onClick = { markArrived(c.id, c.status, c.crew); onClose() }) { Text("📍 وصلت إلى الموقع") }
+                        GhostButton(onClick = { showBlock = !showBlock }) { Text("🚫 تعذّر العمل") }
                         if (showBlock) {
                             Text("سبب التعذّر (ستعود الشكوى للقسم):", style = MaterialTheme.typography.bodySmall)
                             listOf("الموقع مغلق أو لا يمكن الوصول", "المواطن غير موجود", "يحتاج معدات أو كادراً أكبر", "خارج اختصاص القسم", "أخرى (اكتب التفاصيل في خانة الرد)").forEach { r ->
@@ -703,7 +735,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                                     Text(r)
                                 }
                             }
-                            Button(enabled = blockReason.isNotBlank() && !blocking, onClick = {
+                            DepthButton(enabled = blockReason.isNotBlank() && !blocking, onClick = {
                                 blocking = true
                                 val why = blockReason + (if (reply.isNotBlank()) " — " + reply.trim() else "")
                                 blockWork(c.id, c.crew, why) { e ->
@@ -713,7 +745,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                             }) { Text(if (blocking) "جارٍ الإرسال..." else "إعادة الشكوى للقسم") }
                         }
                     }
-                    OutlinedTextField(reply, { reply = it }, label = { Text("رد على المواطن / ملخص العمل المنجز") }, modifier = Modifier.fillMaxWidth())
+                    DepthField(reply, { reply = it }, label = { Text("رد على المواطن / ملخص العمل المنجز") }, modifier = Modifier.fillMaxWidth())
                     if (crews.isNotEmpty() && !crewMode) {
                         Text("كادر الصيانة الميداني", style = MaterialTheme.typography.titleSmall)
                         crews.forEach { k ->
@@ -722,7 +754,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                                 Text(k + (busyCrews[k]?.let { "  🔴 مشغول ($it)" } ?: "  🟢 متاح"))
                             }
                         }
-                        Button(
+                        DepthButton(
                             enabled = crew.isNotBlank() && crew != c.crew,
                             onClick = { assignCrew(c.id, crew, c.status); onClose() }
                         ) { Text(if (c.crew.isBlank()) "إسناد للكادر" else "تغيير الكادر") }
@@ -749,7 +781,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         Text("غير ممكن")
                     }
                     if (repairable == true) {
-                        OutlinedTextField(materials, { materials = it }, label = { Text("المواد المطلوبة للصيانة") }, modifier = Modifier.fillMaxWidth())
+                        DepthField(materials, { materials = it }, label = { Text("المواد المطلوبة للصيانة") }, modifier = Modifier.fillMaxWidth())
                     }
                     }
                     if (canComplete) {
@@ -763,8 +795,8 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         } catch (e: Exception) { null }
                     }
                     if (aft != null) Image(bitmap = aft, contentDescription = null, modifier = Modifier.fillMaxWidth())
-                    OutlinedButton(onClick = { pickAfter.launch("image/*") }) { Text(if (aft == null) "📷 إرفاق صورة بعد الصيانة" else "📷 استبدال الصورة") }
-                    Button(enabled = !sending, onClick = {
+                    GhostButton(onClick = { pickAfter.launch("image/*") }) { Text(if (aft == null) "📷 إرفاق صورة بعد الصيانة" else "📷 استبدال الصورة") }
+                    DepthButton(enabled = !sending, onClick = {
                         if (reply.isBlank()) err = "اكتب ملخص العمل المنجز في خانة الرد"
                         else {
                             err = ""; sending = true
@@ -778,12 +810,12 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                             }
                         }
                     }) { Text(if (sending) "جارٍ الإرسال..." else if (crewMode) "📨 إرسال الإنجاز لاعتماد القسم" else "✅ إرسال الإنجاز للمواطن والمدير") }
-                    if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
+                    if (err.isNotBlank()) Alert(err)
                     } else if (!crewMode) {
-                        OutlinedButton(onClick = { showDirect = true }) { Text("إنهاء مباشر دون الكادر (استثنائي)") }
+                        GhostButton(onClick = { showDirect = true }) { Text("إنهاء مباشر دون الكادر (استثنائي)") }
                     }
                 }
-                if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
+                if (err.isNotBlank()) Alert(err)
                 if (history.isNotEmpty()) {
                     Text("سجل الشكوى", style = MaterialTheme.typography.titleSmall)
                     history.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -791,9 +823,9 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
             }
         },
         confirmButton = {
-            if (done || pending) TextButton(onClick = onClose) { Text("إغلاق") }
+            if (done || pending) LinkButton(onClick = onClose) { Text("إغلاق") }
             else Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (canReport) Button(onClick = {
+                if (canReport) DepthButton(onClick = {
                     val r = repairable
                     when {
                         r == null -> err = "اختر: ممكن صيانتها أو غير ممكن"
@@ -802,10 +834,10 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                         else -> { sendReport(c.id, branch, r, materials.trim()); onClose() }
                     }
                 }) { Text("إرسال التقرير للمدير") }
-                else if (branches.isNotEmpty()) OutlinedButton(enabled = branch.isNotBlank() && branch != c.branch, onClick = { setBranch(c.id, branch); onClose() }) { Text("حفظ الفرع") }
-                if (c.status == "routed" && !crewMode) Button(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
+                else if (branches.isNotEmpty()) GhostButton(enabled = branch.isNotBlank() && branch != c.branch, onClick = { setBranch(c.id, branch); onClose() }) { Text("حفظ الفرع") }
+                if (c.status == "routed" && !crewMode) DepthButton(onClick = { setStatus(c.id, "in_progress", reply); onClose() }) { Text("بدء المعالجة") }
             }
         },
-        dismissButton = { if (!done && !pending) TextButton(onClick = onClose) { Text("إغلاق") } }
+        dismissButton = { if (!done && !pending) LinkButton(onClick = onClose) { Text("إغلاق") } }
     )
 }

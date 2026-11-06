@@ -174,6 +174,8 @@ function renderSettings() {
   const model = h('input', { type: 'text', value: settings.model || '' });
   const depts = h('textarea', { value: (settings.departments || []).join('\n') });
   const auto = h('input', { type: 'checkbox', checked: !!settings.auto });
+  const autoCrew = h('input', { type: 'checkbox', checked: settings.autoCrew !== false });
+  const usePriority = h('input', { type: 'checkbox', checked: settings.usePriority !== false });
   const path = h('span', {}, settings.serviceAccountPath || 'لم يُحدد بعد');
   return [
     h('div', { class: 'card' },
@@ -187,6 +189,8 @@ function renderSettings() {
       h('label', {}, 'تعليمات التوجيه (اشرح للنموذج أي شكوى تذهب لأي قسم)'), rules,
       h('label', {}, 'الأقسام (قسم في كل سطر — يجب أن تطابق أقسام الموظفين تماماً)'), depts,
       h('label', {}, auto, ' التحليل والتوجيه التلقائي للشكاوى الجديدة'),
+      h('label', {}, usePriority, ' تحديد أولوية الشكوى تلقائياً (إن ألغيته تُوجَّه الشكاوى بلا أولوية ويبقى للمدير تحديدها يدوياً)'),
+      h('label', {}, autoCrew, ' إسناد الشكوى تلقائياً إلى كادر متاح في نفس القسم (الأعجل أولاً) دون انتظار إدارة القسم'),
       h('label', {}, 'مفتاح حساب خدمة Firebase (JSON)'),
       h('button', { class: 'act', onclick: async () => { const p = await window.api.pickKey(); settings.serviceAccountPath = p; path.textContent = p || 'لم يُحدد بعد'; } }, 'اختيار الملف'), ' ', path,
       h('p', {}),
@@ -195,7 +199,7 @@ function renderSettings() {
         onclick: async () => {
           settings = {
             ...settings, provider: provider.value, rules: rules.value.trim(), ollamaUrl: ollamaUrl.value.trim(), ollamaModel: ollamaModel.value.trim(), localImages: localImages.checked,
-            apiKey: key.value.trim(), model: model.value.trim(), auto: auto.checked,
+            apiKey: key.value.trim(), model: model.value.trim(), auto: auto.checked, autoCrew: autoCrew.checked, usePriority: usePriority.checked,
             departments: depts.value.split('\n').map((s) => s.trim()).filter(Boolean),
           };
           await window.api.setSettings(settings);

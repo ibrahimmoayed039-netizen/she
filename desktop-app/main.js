@@ -14,6 +14,8 @@ const store = new Store({
     localImages: false,
     serviceAccountPath: '',
     auto: true,
+    usePriority: true, // تحديد الأولوية تلقائياً (إن أُلغي تُوجَّه الشكاوى بلا أولوية)
+    autoCrew: true, // إسناد تلقائي للشكوى إلى كادر متاح في نفس القسم
     departments: ['البلدية', 'المياه', 'المجاري', 'أخرى'],
     rules: '- شكاوى البلدية: كسر أو حفر أو فجوات أو تضرر الشارع والرصيف، وتراكم النفايات، والنظافة والإنارة العامة → البلدية.\n- شكاوى المياه: انقطاع الماء، ضعف الضخ، تلوث الماء، وكسر أنبوب ماء الشرب → المياه.\n- شكاوى المجاري: طفح المجاري، انسداد أو انكسار شبكة الصرف، وروائح المجاري → المجاري.\n- إذا اجتمع كسر في الشارع مع تسرب ماء أو مجاري، فاختر الجهة المسؤولة عن مصدر التسرب (المياه أو المجاري)، وإلا فالبلدية.\n- اختر «أخرى» فقط إذا لم تنطبق أي قاعدة.',
   },
@@ -75,6 +77,62 @@ async function addLog(id, by, action) {
   try {
     await db.collection('complaints').doc(id).collection('log').add({ by, action, at: admin.firestore.FieldValue.serverTimestamp() });
   } catch (e) { log('تعذّر كتابة السجل: ' + e.message); }
+}
+
+// ---------- الإسناد التلقائي للكادر المتاح ----------
+// بعد توجيه الشكوى لقسمها تُسنَد مباشرة إلى كادر ميداني متاح (ليس عنده شكوى غير منتهية) من نفس القسم،
+// الأعجل أولاً. إن لم يوجد كادر متاح تبقى لدى إدارة القسم، وتُسنَد تلقائياً عند فراغ أي كادر.
+const PRI_W = { urgent: 0, high: 1, medium: 2, low: 3 };
+const PRI_NAME = { urgent: 'عاجلة', high: 'عالية', medium: 'متوسطة', low: 'منخفضة' };
+const assigning = new Set();
+async function autoAssign(dept) {
+  if (!db || !dept || !store.get('autoCrew') || assigning.has(dept)) return;
+  assigning.add(dept);
+  try {
+    const [cs, ss] = await Promise.all([
+      db.collection('complaints').where('department', '==', dept).get(),
+      db.collection('staff').where('department', '==', dept).get(),
+    ]);
+    const crews = ss.docs.map((d) => d.data())
+      .filter((x) => x.role === 'crew' && x.disabled !== true && String(x.crew || '').trim())
+      .map((x) => ({ name: String(x.crew).trim(), areas: Array.isArray(x.areas) ? x.areas : [] }));
+    if (!crews.length) return;
+    const all = cs.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // المشغول = له شكوى مُسندة غير منتهية
+    const busyNames = new Set(all.filter((c) => String(c.crew || '').trim() && c.status !== 'resolved').map((c) => String(c.crew).trim()));
+    let idle = crews.filter((k) => !busyNames.has(k.name));
+    if (!idle.length) return;
+    // شكاوى القسم غير المُسندة: الأعجل ثم الأقدم. تُستثنى المكررة، والتي أعادها كادر بسبب «تعذّر العمل» (قرارها للإدارة)
+    const queue = all.filter((c) => c.status === 'routed' && !String(c.crew || '').trim() && !c.duplicateOf && !c.blockedReason)
+      .sort((a, b) => (store.get('usePriority') === false ? 0 : (PRI_W[a.priority] ?? 2) - (PRI_W[b.priority] ?? 2)) || tms(a.createdAt) - tms(b.createdAt));
+    for (const c of queue) {
+      if (!idle.length) break;
+      // يُفضَّل كادر حيّه/قاطعه يشمل حيّ الشكوى، ثم كادر بلا أحياء محددة، ثم أي كادر متاح
+      const m = c.area ? idle.filter((k) => k.areas.includes(c.area)) : [];
+      const free = idle.filter((k) => !k.areas.length);
+      const pick = (m[0] || free[0] || idle[0]);
+      const ref = db.collection('complaints').doc(c.id);
+      const ok = await db.runTransaction(async (t) => {
+        const cur = (await t.get(ref)).data();
+        if (!cur || cur.status !== 'routed' || String(cur.crew || '').trim() || cur.duplicateOf) return false;
+        t.update(ref, {
+          crew: pick.name, crewAt: admin.firestore.FieldValue.serverTimestamp(), status: 'in_progress',
+          blockedReason: '', autoAssigned: true, updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        return true;
+      });
+      if (!ok) continue;
+      idle = idle.filter((k) => k.name !== pick.name);
+      addLog(c.id, 'النظام', `أُسندت تلقائياً إلى «${pick.name}» (كادر متاح)` + (c.priority ? ` — الأولوية ${PRI_NAME[c.priority]}` : ''));
+      log(`🤖 إسناد تلقائي: "${c.title || ''}" ← ${pick.name} (${dept})`);
+    }
+  } catch (e) { log('تعذّر الإسناد التلقائي: ' + e.message); }
+  finally { assigning.delete(dept); }
+}
+let kickTimer = null;
+function autoAssignAll() {
+  clearTimeout(kickTimer);
+  kickTimer = setTimeout(() => (store.get('departments') || []).forEach((d) => autoAssign(d)), 2500);
 }
 
 // ---------- كشف الشكاوى المكررة ----------
@@ -171,8 +229,10 @@ async function connect() {
         }).sort((a, b) => b.createdMs - a.createdMs);
         win.webContents.send('complaints', list);
         // إشعار المواطن عند تغيّر الحالة أو إسناد كادر (لا يُرسل في أول تحميل)
+        const freed = new Set();
         snap.docs.forEach((doc) => {
           const x = doc.data(), prev = lastState.get(doc.id);
+          if (seeded && prev && x.department && ((x.status === 'resolved' && prev.status !== 'resolved') || (prev.crew && !x.crew))) freed.add(x.department);
           if (seeded && prev && x.status === 'resolved' && prev.status !== 'resolved') log(`✅ أُنجز العمل: "${x.title || ''}"` + (x.crew ? ' (الكادر: ' + x.crew + ')' : ''));
           const reopenedNow = (x.reopenCount || 0) > (prev ? prev.reopen || 0 : 0);
           const blockedNow = !!prev && tms(x.blockedAt) > (prev.blocked || 0);
@@ -237,13 +297,16 @@ async function connect() {
           }
           lastState.set(doc.id, { status: x.status, crew: x.crew || '', arrived: !!x.arrivedAt, reopen: x.reopenCount || 0, assessed: x.assessedAt ? x.assessedAt.toMillis() : 0, matReady: x.materialsReady === true, blocked: tms(x.blockedAt), returned: tms(x.returnedAt), matStatus: x.materialsStatus || '' });
         });
+        const first = !seeded;
         seeded = true;
+        if (first) autoAssignAll(); else freed.forEach((d) => autoAssign(d));
         if (store.get('auto')) list.filter((c) => c.status === 'new').forEach((c) => analyze(c.id));
       },
       (e) => log('خطأ في الاتصال: ' + e.message)
     );
     unsubStaff = db.collection('staff').onSnapshot(
       (snap) => {
+        if (seeded) autoAssignAll();
         win.webContents.send('staff', snap.docs.map((d) => {
           const x = d.data();
           const depts = Array.isArray(x.departments) && x.departments.length ? x.departments : (x.department ? [x.department] : []);
@@ -384,15 +447,16 @@ async function analyze(id, force = false) {
     if (!r) throw new Error('لم يتم الحصول على نتيجة');
     if (cat && r.department !== cat) { aiDept = r.department; r.department = cat; used += ' + اختيار المواطن'; }
 
+    if (store.get('usePriority') === false) r.priority = '';
     await ref.update({
       department: r.department, priority: r.priority, aiSummary: r.summary, status: 'routed',
       ...(aiDept ? { aiDepartment: aiDept } : {}),
       routedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     failed.delete(id);
-    addLog(id, 'النظام', `تم التوجيه إلى ${r.department} بأولوية ${r.priority} (${used})` + (cat ? ` — اختار المواطن النوع «${cat}»` + (aiDept ? ` (اقترح التحليل «${aiDept}» فاعتُمد اختيار المواطن)` : '') : ''));
+    addLog(id, 'النظام', `تم التوجيه إلى ${r.department}` + (r.priority ? ` بأولوية ${r.priority}` : ' بلا أولوية') + ` (${used})` + (cat ? ` — اختار المواطن النوع «${cat}»` + (aiDept ? ` (اقترح التحليل «${aiDept}» فاعتُمد اختيار المواطن)` : '') : ''));
     notifyTopic(r.department, 'شكوى جديدة: ' + (d.title || ''), r.summary || d.text || '');
-    checkDuplicate(id, d, r.department);
+    checkDuplicate(id, d, r.department).then(() => autoAssign(r.department));
     log(`تم توجيه "${d.title}" إلى ${r.department} (${used})`);
   } catch (e) {
     failed.add(id);
@@ -444,7 +508,7 @@ ipcMain.handle('complaint:add', async (_, d) => {
     if (routed) {
       addLog(added.id, 'المدير', 'إدخال يدوي وتوجيه إلى ' + doc.department);
       notifyTopic(doc.department, 'شكوى جديدة: ' + title, text);
-      checkDuplicate(added.id, { ...doc, createdAt: admin.firestore.Timestamp.now() }, doc.department);
+      checkDuplicate(added.id, { ...doc, createdAt: admin.firestore.Timestamp.now() }, doc.department).then(() => autoAssign(doc.department));
     }
     log('تمت إضافة الشكوى يدوياً' + (routed ? ' إلى ' + doc.department : ' وستُحلَّل وتُوجَّه'));
     return { ok: true };

@@ -94,19 +94,19 @@ fun SetupScreen(onDone: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("ربط قاعدة البيانات", style = MaterialTheme.typography.headlineSmall)
+        ScreenTitle("ربط قاعدة البيانات")
         Text("هذه الخطوة تُنفَّذ مرة واحدة فقط. اختر ملف google-services.json الخاص بمشروع Firebase، أو الصق محتواه في الأسفل.")
-        Button(onClick = { pick.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+        DepthButton(onClick = { pick.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
             Text("اختيار ملف google-services.json")
         }
-        OutlinedTextField(
+        DepthField(
             pasted, { pasted = it }, label = { Text("أو الصق محتوى الملف هنا") },
             modifier = Modifier.fillMaxWidth().height(180.dp)
         )
-        OutlinedButton(
+        GhostButton(
             enabled = pasted.isNotBlank(), onClick = { handle(pasted) },
             modifier = Modifier.fillMaxWidth()
         ) { Text("حفظ واتصال") }
-        if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
+        if (err.isNotBlank()) Alert(err)
     }
 }

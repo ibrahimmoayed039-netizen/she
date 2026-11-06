@@ -29,7 +29,12 @@ object FbConfig {
         val key = p.getString("apiKey", null)
         val app = p.getString("appId", null)
         val project = p.getString("projectId", null)
-        if (key.isNullOrBlank() || app.isNullOrBlank() || project.isNullOrBlank()) return false
+        if (key.isNullOrBlank() || app.isNullOrBlank() || project.isNullOrBlank()) {
+            // إعدادات مدمجة وقت البناء داخل APK (assets/fb_config.json): يفتح التطبيق مباشرة على شاشة الدخول
+            val embedded = readEmbedded(ctx)
+            if (embedded == null || !saveFromJson(ctx, embedded)) return false
+            return init(ctx)
+        }
         return try {
             FirebaseApp.initializeApp(
                 ctx,
@@ -41,6 +46,13 @@ object FbConfig {
             false
         }
     }
+
+    private fun readEmbedded(ctx: Context): String? = try {
+        ctx.assets.open("fb_config.json").bufferedReader().use { it.readText() }
+    } catch (e: Exception) { null }
+
+    /** هل الإعدادات مدمجة داخل التطبيق؟ (حينها لا معنى لتغيير الاتصال يدوياً) */
+    fun hasEmbedded(ctx: Context): Boolean = readEmbedded(ctx) != null
 
     /** يقرأ محتوى google-services.json ويحفظ القيم الثلاث المطلوبة. */
     fun saveFromJson(ctx: Context, json: String): Boolean = try {
@@ -87,19 +99,19 @@ fun SetupScreen(onDone: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("ربط قاعدة البيانات", style = MaterialTheme.typography.headlineSmall)
+        ScreenTitle("ربط قاعدة البيانات")
         Text("هذه الخطوة تُنفَّذ مرة واحدة فقط. اختر ملف google-services.json الخاص بمشروع Firebase، أو الصق محتواه في الأسفل.")
-        Button(onClick = { pick.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+        DepthButton(onClick = { pick.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
             Text("اختيار ملف google-services.json")
         }
-        OutlinedTextField(
+        DepthField(
             pasted, { pasted = it }, label = { Text("أو الصق محتوى الملف هنا") },
             modifier = Modifier.fillMaxWidth().height(180.dp)
         )
-        OutlinedButton(
+        GhostButton(
             enabled = pasted.isNotBlank(), onClick = { handle(pasted) },
             modifier = Modifier.fillMaxWidth()
         ) { Text("حفظ واتصال") }
-        if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error)
+        if (err.isNotBlank()) Alert(err)
     }
 }
