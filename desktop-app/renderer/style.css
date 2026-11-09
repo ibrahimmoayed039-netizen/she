@@ -121,6 +121,7 @@ input[type=text],input[type=password],textarea{width:100%}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:var(--inset),0 0 0 4px rgba(37,99,235,.22)}
 textarea{height:130px;resize:vertical}
 select{cursor:pointer}
+.mask{-webkit-text-security:disc}
 .bar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
 .bar label{margin:0;font-weight:normal;font-size:13px;color:var(--muted)}
 .bar input[type=text]{width:190px}
@@ -225,3 +226,6 @@ details.grp>.card:hover{transform:none}
 .area-row.miss{background:var(--warn-bg);border-radius:10px}
 
 .sec-card .sec-del-btn{margin-top:10px;font-size:12px;padding:5px 12px;color:var(--danger)}
+
+.voice{margin:8px 0;padding:8px 10px;border-radius:10px;background:rgba(14,138,147,.08);border:1px solid rgba(14,138,147,.25)}
+.voice audio{width:100%;margin-top:6px}

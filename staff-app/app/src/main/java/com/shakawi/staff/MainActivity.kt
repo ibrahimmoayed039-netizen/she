@@ -55,7 +55,8 @@ data class Complaint(
     val reopenCount: Long, val reopenReason: String, val confirmed: Boolean,
     val materialsReady: Boolean, val assessedMs: Long,
     val materialsStatus: String, val materialsNote: String, val returnNote: String,
-    val blockedReason: String, val blockedBy: String
+    val blockedReason: String, val blockedBy: String,
+    val voiceB64: String, val voiceSec: Long, val voiceText: String
 )
 
 fun toComplaint(d: DocumentSnapshot) = Complaint(
@@ -73,7 +74,8 @@ fun toComplaint(d: DocumentSnapshot) = Complaint(
     d.getLong("reopenCount") ?: 0L, d.getString("reopenReason") ?: "", d.getBoolean("confirmed") ?: false,
     d.getBoolean("materialsReady") ?: false, d.getTimestamp("assessedAt")?.toDate()?.time ?: 0L,
     d.getString("materialsStatus") ?: "", d.getString("materialsNote") ?: "", d.getString("returnNote") ?: "",
-    d.getString("blockedReason") ?: "", d.getString("blockedBy") ?: ""
+    d.getString("blockedReason") ?: "", d.getString("blockedBy") ?: "",
+    d.getString("voiceB64") ?: "", d.getLong("voiceSec") ?: 0L, d.getString("voiceText") ?: ""
 )
 
 fun priorityColor(c: Complaint): Color = when {
@@ -566,6 +568,7 @@ fun Main(depts: List<String>, branches: List<String>, crews: List<String>, crewN
                                 if (c.returnNote.isNotBlank() && c.status == "in_progress") Alert("↩️ أُعيد من القسم: " + c.returnNote)
                                 if (c.blockedReason.isNotBlank() && c.crew.isBlank() && c.status != "resolved") Alert("🚫 تعذّر على الكادر " + c.blockedBy + ": " + c.blockedReason)
                                 Text(stageLine(c), style = MaterialTheme.typography.bodySmall, color = Sk.Muted)
+                                if (c.voiceB64.isNotEmpty()) Text("🎙️ تحتوي رسالة صوتية", style = MaterialTheme.typography.bodySmall, color = Sk.Muted)
                                 if (c.repairable == true && c.materials.isNotBlank() && c.status != "resolved" && c.status != "pending_review" && matStatus(c) != "received") Note("📦 المواد: " + matStatusAr(matStatus(c)), tone = if (matStatus(c) == "ready") Sk.Teal else Sk.Coral)
                                 if (c.dupTitle.isNotBlank()) Alert("🔁 مكررة: يوجد بلاغ سابق مماثل")
                                 if (c.dupCount > 0) Text("🔁 تكررت " + c.dupCount + " مرة")
@@ -685,6 +688,13 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 }
                 if (c.repairable == false && c.status != "resolved") Alert("🚫 التقرير: غير ممكن الصيانة — بانتظار قرار الإدارة")
                 Text(c.text)
+                if (c.voiceB64.isNotEmpty()) {
+                    val vctx = androidx.compose.ui.platform.LocalContext.current
+                    val vf = remember(c.id) { voiceFileFromB64(vctx, c.id, c.voiceB64) }
+                    Text("🎙️ رسالة صوتية من المواطن", style = MaterialTheme.typography.titleSmall)
+                    VoicePlayer(vf, c.voiceSec.toInt())
+                    if (c.voiceText.isNotBlank()) Note(c.voiceText, tone = Sk.Teal, title = "📝 تفريغ الرسالة الصوتية")
+                }
                 if (bmp != null) Image(bitmap = bmp, contentDescription = null, modifier = Modifier.fillMaxWidth())
                 if (c.name.isNotBlank() || c.phone.isNotBlank()) Text("المواطن: ${c.name} ${c.phone}")
                 if (done) {

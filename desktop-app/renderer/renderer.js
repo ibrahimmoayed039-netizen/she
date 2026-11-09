@@ -13,6 +13,14 @@ function h(tag, props = {}, ...kids) {
   return e;
 }
 
+/** مشغّل الرسالة الصوتية التي أرسلها المواطن (AAC داخل MP4 مخزّن Base64) */
+function voiceBox(c) {
+  return h('div', { class: 'voice' },
+    h('b', {}, '🎙️ رسالة صوتية من المواطن' + (c.voiceSec ? ' (' + c.voiceSec + ' ث)' : '')),
+    h('audio', { controls: true, preload: 'none', src: 'data:audio/mp4;base64,' + c.voiceB64 }),
+    c.voiceText ? h('p', { class: 'small' }, '📝 التفريغ: ' + c.voiceText) : '');
+}
+
 const fmtT = (ms) => new Date(ms).toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
 function fmtD(ms) {
   if (ms < 0) return '-';
@@ -130,6 +138,7 @@ function card(c) {
     h('h3', {}, (urgent ? '🚨 ' : '') + c.title),
     h('small', {}, meta),
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
+    c.voiceB64 ? voiceBox(c) : '',
     h('p', {}, c.text),
     (c.name || c.phone) ? h('p', {}, 'المواطن: ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
     c.status !== 'new' ? stageSteps(c) : '',
@@ -162,16 +171,19 @@ function card(c) {
 
 function renderSettings() {
   const provider = h('select', {},
-    h('option', { value: 'claude' }, 'Claude (يحتاج مفتاح API ورصيد)'),
-    h('option', { value: 'local' }, 'محلي Ollama (مجاني، بدون إنترنت)'),
-    h('option', { value: 'hybrid' }, 'هجين: المحلي أولاً ثم Claude عند الشك أو الفشل'));
+    h('option', { value: 'claude' }, 'سحابي (يحتاج مفتاحاً ورصيداً)'),
+    h('option', { value: 'local' }, 'محلي (مجاني، بدون إنترنت)'),
+    h('option', { value: 'hybrid' }, 'هجين: المحلي أولاً ثم السحابي عند الشك أو الفشل'));
   provider.value = settings.provider || 'claude';
-  const ollamaUrl = h('input', { type: 'text', value: settings.ollamaUrl || 'http://localhost:11434' });
-  const ollamaModel = h('input', { type: 'text', value: settings.ollamaModel || '', placeholder: 'الاسم كما يظهر في الأمر ollama list' });
+  const ollamaUrl = h('input', { type: 'text', class: 'mask', value: settings.ollamaUrl || 'http://localhost:11434' });
+  const ollamaModel = h('input', { type: 'text', class: 'mask', value: settings.ollamaModel || '' });
   const localImages = h('input', { type: 'checkbox', checked: !!settings.localImages });
-  const rules = h('textarea', { value: settings.rules || '', rows: 8, placeholder: 'اكتب هنا قواعد التوجيه، مثلاً: كسر الشارع والحفر → البلدية' });
-  const key = h('input', { type: 'password', value: settings.apiKey || '' });
-  const model = h('input', { type: 'text', value: settings.model || '' });
+  const sttUrl = h('input', { type: 'text', class: 'mask', value: settings.sttUrl || 'https://api.openai.com/v1/audio/transcriptions' });
+  const sttKey = h('input', { type: 'password', class: 'sec', value: settings.sttKey || '' });
+  const sttModel = h('input', { type: 'text', class: 'mask', value: settings.sttModel || 'whisper-1' });
+  const rules = h('textarea', { class: 'mask', value: settings.rules || '', rows: 8 });
+  const key = h('input', { type: 'password', class: 'sec', value: settings.apiKey || '' });
+  const model = h('input', { type: 'text', class: 'mask', value: settings.model || '' });
   const depts = h('textarea', { value: (settings.departments || []).join('\n') });
   const auto = h('input', { type: 'checkbox', checked: !!settings.auto });
   const autoCrew = h('input', { type: 'checkbox', checked: settings.autoCrew !== false });
@@ -180,18 +192,23 @@ function renderSettings() {
   return [
     h('div', { class: 'card' },
       h('label', {}, 'طريقة التحليل'), provider,
-      h('label', {}, 'مفتاح Claude API (للوضعين Claude والهجين)'), key,
+      h('label', {}, 'مفتاح التحليل السحابي (للوضعين السحابي والهجين)'), key,
       h('label', {}, 'اسم النموذج'), model,
-      h('label', {}, 'عنوان Ollama'), ollamaUrl,
-      h('label', {}, 'اسم نموذج Ollama'), ollamaModel,
+      h('label', {}, 'عنوان المحرك المحلي'), ollamaUrl,
+      h('label', {}, 'اسم النموذج المحلي'), ollamaModel,
       h('label', {}, localImages, ' النموذج المحلي يدعم الصور (فعّلها فقط لنموذج يفهم الصور)'),
-      h('button', { class: 'act', onclick: () => window.api.testOllama() }, 'فحص اتصال Ollama'),
+      h('button', { class: 'act', onclick: () => window.api.testOllama() }, 'فحص اتصال المحرك المحلي'),
+      h('label', {}, '🎙️ تفريغ الرسائل الصوتية إلى نص ليحللها الذكاء الاصطناعي: عنوان الخدمة'), sttUrl,
+      h('label', {}, 'مفتاح خدمة التفريغ'), sttKey,
+      h('label', {}, 'نموذج التفريغ'), sttModel,
       h('label', {}, 'تعليمات التوجيه (اشرح للنموذج أي شكوى تذهب لأي قسم)'), rules,
       h('label', {}, 'الأقسام (قسم في كل سطر — يجب أن تطابق أقسام الموظفين تماماً)'), depts,
       h('label', {}, auto, ' التحليل والتوجيه التلقائي للشكاوى الجديدة'),
       h('label', {}, usePriority, ' تحديد أولوية الشكوى تلقائياً (إن ألغيته تُوجَّه الشكاوى بلا أولوية ويبقى للمدير تحديدها يدوياً)'),
       h('label', {}, autoCrew, ' إسناد الشكوى تلقائياً إلى كادر متاح في نفس القسم (الأعجل أولاً) دون انتظار إدارة القسم'),
-      h('label', {}, 'مفتاح حساب خدمة Firebase (JSON)'),
+      h('label', {}, '🗄️ نسخة محلية ثانوية (SQLite) للشكاوى على هذا الحاسوب: نسخ احتياطي وتقارير، تبقى حتى لو حُذفت البيانات من الخادم'),
+      h('button', { class: 'act', onclick: () => window.api.openArchive() }, 'فتح مجلد النسخة المحلية'),
+      h('label', {}, 'ملف ربط قاعدة البيانات (JSON)'),
       h('button', { class: 'act', onclick: async () => { const p = await window.api.pickKey(); settings.serviceAccountPath = p; path.textContent = p || 'لم يُحدد بعد'; } }, 'اختيار الملف'), ' ', path,
       h('p', {}),
       h('button', {
@@ -199,6 +216,7 @@ function renderSettings() {
         onclick: async () => {
           settings = {
             ...settings, provider: provider.value, rules: rules.value.trim(), ollamaUrl: ollamaUrl.value.trim(), ollamaModel: ollamaModel.value.trim(), localImages: localImages.checked,
+            sttUrl: sttUrl.value.trim(), sttKey: sttKey.value.trim(), sttModel: sttModel.value.trim(),
             apiKey: key.value.trim(), model: model.value.trim(), auto: auto.checked, autoCrew: autoCrew.checked, usePriority: usePriority.checked,
             departments: depts.value.split('\n').map((s) => s.trim()).filter(Boolean),
           };
@@ -211,20 +229,56 @@ function renderSettings() {
 }
 
 // تصفير البيانات: يحذف الشكاوى (وسجلاتها) فقط، والإعدادات تبقى كما هي
+// بطاقة التصفير (محمية بكلمة سر المبرمج، وهي غير مكتوبة في الكود بل بصمتها SHA-256 فقط):
+//  - الضغط على زر «تصفير البيانات» 5 مرات (بلا كلمة سر، مع نافذة تأكيد) ← تصفير البيانات
+//  - الضغط على عنوان البطاقة 10 مرات ثم كلمة السر ← إظهار معلومات إعدادات الذكاء المخفية (حتى مغادرة الصفحة)
+// يتصفّر العدّاد إن توقف الضغط 4 ثوانٍ.
+const RESET_HASH = 'b1818102ceded0ff9e22511d1e452c1b56e413ff7693927b5b05806674f8c826';
+async function sha256Hex(t) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t));
+  return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
 function resetCard() {
   const st = h('span', { class: 'small' });
+  let mode = '', rClicks = 0, tClicks = 0, rTimer = null, tTimer = null;
+  const pw = h('input', { type: 'password', style: 'display:none;max-width:220px', placeholder: 'كلمة السر' });
+  const ask = (m) => { mode = m; st.textContent = 'اكتب كلمة السر ثم اضغط Enter'; pw.style.display = ''; pw.focus(); };
+  pw.addEventListener('keydown', async (ev) => {
+    if (ev.key !== 'Enter') return;
+    const ok = (await sha256Hex(pw.value)) === RESET_HASH;
+    pw.value = '';
+    if (!ok) { st.textContent = '❌ كلمة السر غير صحيحة'; return; }
+    pw.style.display = 'none';
+    const m = mode; mode = '';
+    if (m === 'show') {
+      document.querySelectorAll('.mask').forEach((e) => e.classList.remove('mask'));
+      document.querySelectorAll('.sec').forEach((e) => { e.type = 'text'; });
+      st.textContent = '';
+      return;
+    }
+  });
+  const doReset = async () => {
+    if (!(await askConfirm('حذف كل البيانات نهائياً؟\n(الشكاوى + حسابات الموظفين والكوادر)\nلا يمكن التراجع، والإعدادات لا تتأثر.'))) { st.textContent = ''; return; }
+    st.textContent = '...';
+    const r = await window.api.resetData();
+    st.textContent = r.ok ? '✅ ' + r.message : '❌ ' + r.error;
+  };
+  const title = h('h3', { style: 'user-select:none', onclick: () => {
+    clearTimeout(tTimer);
+    if (++tClicks >= 10) { tClicks = 0; ask('show'); return; }
+    tTimer = setTimeout(() => { tClicks = 0; }, 4000);
+  } }, '🧹 تصفير البيانات');
   return h('div', { class: 'card' },
-    h('h3', {}, '🧹 تصفير البيانات'),
+    title,
     h('p', { class: 'small' }, 'يحذف كل شيء نهائياً: الشكاوى وسجلاتها وحسابات الموظفين والكوادر وقوائم الكوادر. الإعدادات فقط (المفاتيح، الأقسام، القواطع، تعليمات التوجيه) تبقى كما هي.'),
     h('button', {
       class: 'act',
-      onclick: async () => {
-        if (!(await askConfirm('حذف كل البيانات نهائياً؟\n(الشكاوى + حسابات الموظفين والكوادر)\nلا يمكن التراجع، والإعدادات لا تتأثر.'))) return;
-        st.textContent = '...';
-        const r = await window.api.resetData();
-        st.textContent = r.ok ? '✅ ' + r.message : '❌ ' + r.error;
+      onclick: () => {
+        clearTimeout(rTimer);
+        if (++rClicks >= 5) { rClicks = 0; doReset(); return; }
+        rTimer = setTimeout(() => { rClicks = 0; }, 4000);
       },
-    }, '🗑 تصفير البيانات'), ' ', st);
+    }, '🗑 تصفير البيانات'), ' ', pw, ' ', st);
 }
 
 function branchStats() {
@@ -487,6 +541,7 @@ function renderDone() {
       h('p', { class: 'small' }, (c.resolvedMs ? 'أُنجزت: ' + fmtT(c.resolvedMs) + ' • مدة الإنجاز: ' + fmtD(c.resolvedMs - workStart(c)) : 'وقت الإنجاز غير مسجّل') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '') + (c.confirmed ? ' • ✔ أكّد المواطن' : ' • ⏳ لم يؤكد المواطن بعد') + (c.reopenCount ? ' • 🔁 أُعيد فتحها ' + c.reopenCount + ' مرة' : '')),
       c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
       (c.materials && c.repairable) ? h('p', { class: 'small' }, 'المواد: ' + c.materials) : '',
+      c.voiceB64 ? voiceBox(c) : '',
       (c.imageB64 || c.afterImageB64) ? h('div', { class: 'ba' },
         c.imageB64 ? h('figure', {}, h('figcaption', {}, 'قبل (من المواطن)'), h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 })) : '',
         c.afterImageB64 ? h('figure', {}, h('figcaption', {}, 'بعد الصيانة'), h('img', { src: 'data:image/jpeg;base64,' + c.afterImageB64 })) : '') : '',
@@ -545,7 +600,7 @@ function deptStaffCard() {
   const accounts = staff.filter((s) => s.role !== 'crew');
   return h('div', { class: 'card' },
     h('h3', {}, '👤 إنشاء حساب موظف قسم'),
-    h('p', { class: 'small' }, 'الحساب الذي يستلم شكاوى القسم ويُسند الكوادر (بدل Firebase Console).'),
+    h('p', { class: 'small' }, 'الحساب الذي يستلم شكاوى القسم ويُسند الكوادر.'),
     h('div', { class: 'bar' },
       field('القسم', sel(depts.map((d) => [d, d]), f.department, (v) => { f.department = v; f.sector = ''; render(); })),
       field('القاطع', sel([['', 'بدون قاطع'], ...sectorsOf(f.department).map((x) => [x.name, x.name])], f.sector, (v) => { f.sector = v; })),

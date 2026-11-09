@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   resetData: () => ipcRenderer.invoke('data:reset'),
   connect: () => ipcRenderer.invoke('connect'),
   testOllama: () => ipcRenderer.invoke('ollama:test'),
+  openArchive: () => ipcRenderer.invoke('archive:open'),
   analyze: (id) => ipcRenderer.invoke('analyze', id),
   pickImage: () => ipcRenderer.invoke('image:pick'),
   addComplaint: (d) => ipcRenderer.invoke('complaint:add', d),

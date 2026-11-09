@@ -247,6 +247,9 @@ fun NewTab(onSent: () -> Unit) {
     var title by remember { mutableStateOf("") }
     var text by remember { mutableStateOf("") }
     var img by remember { mutableStateOf<Uri?>(null) }
+    var voiceFile by remember { mutableStateOf<java.io.File?>(null) }
+    var voiceSec by remember { mutableIntStateOf(0) }
+    var voiceRec by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     // أنواع الشكاوى (الأقسام) من برنامج الحاسوب، لتوجيه أدق وأسرع
     var cats by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -292,11 +295,12 @@ fun NewTab(onSent: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         ScreenTitle("شكوى جديدة", "صِف المشكلة وسنوجّهها للجهة المختصة")
+        Note("يكفي إرسال صورة أو رسالة صوتية: يحلّلها النظام ويوجّهها تلقائياً إلى القسم المختص دون أن تحدد القسم.", tone = Sk.Teal)
         DepthCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                DepthField(title, { title = it }, label = { Text("عنوان الشكوى") }, modifier = Modifier.fillMaxWidth())
+                DepthField(title, { title = it }, label = { Text("عنوان الشكوى (اختياري مع الصورة أو الصوت)") }, modifier = Modifier.fillMaxWidth())
                 DepthField(
-                    text, { text = it }, label = { Text("تفاصيل الشكوى") },
+                    text, { text = it }, label = { Text("تفاصيل الشكوى (اختيارية مع الصورة أو الصوت)") },
                     modifier = Modifier.fillMaxWidth().height(160.dp)
                 )
             }
@@ -328,8 +332,9 @@ fun NewTab(onSent: () -> Unit) {
                 else locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         ) { Text(if (locBusy) "جارٍ تحديد الموقع..." else if (loc == null) "📍 إرفاق موقعي الحالي" else "📍 تم تحديد الموقع ✓ (تحديث)") }
+        VoiceRecorderCard(voiceFile, voiceSec, onResult = { f, sc -> voiceFile = f; voiceSec = sc }, onRecording = { voiceRec = it })
         DepthButton(
-            enabled = !busy && title.isNotBlank() && text.isNotBlank() && areaOk,
+            enabled = !busy && !voiceRec && (text.isNotBlank() || img != null || voiceFile != null) && areaOk,
             modifier = Modifier.fillMaxWidth(),
             onClick = {
                 scope.launch {
@@ -341,8 +346,11 @@ fun NewTab(onSent: () -> Unit) {
                             ?: throw Exception("تعذر تسجيل الدخول، تحقق من الإنترنت")
                         val prefs = ctx.getSharedPreferences("p", Context.MODE_PRIVATE)
                         val b64 = img?.let { compressImage(ctx, it) } ?: ""
+                        val vb = voiceFile?.let { try { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) } catch (e: Exception) { "" } } ?: ""
+                        if (b64.length + vb.length > 900_000) throw Exception("حجم الصورة والتسجيل كبير، احذف أحدهما أو قصّر التسجيل")
                         val data = hashMapOf<String, Any>(
-                            "userId" to uid, "title" to title.trim(), "text" to text.trim(),
+                            "userId" to uid, "text" to text.trim(),
+                            "title" to title.trim().ifBlank { if (img != null) "🖼️ شكوى بالصورة" else "🎙️ شكوى صوتية" },
                             "imageB64" to b64,
                             "name" to (prefs.getString("name", "") ?: ""),
                             "phone" to (prefs.getString("phone", "") ?: ""),
@@ -351,6 +359,8 @@ fun NewTab(onSent: () -> Unit) {
                             "createdAt" to FieldValue.serverTimestamp()
                         )
                         loc?.let { data["lat"] = it.first; data["lng"] = it.second }
+                        if (title.isBlank()) data["autoTitle"] = true
+                        if (vb.isNotEmpty()) { data["voiceB64"] = vb; data["voiceSec"] = voiceSec.toLong() }
                         if (category.isNotBlank()) data["category"] = category
                         area?.takeIf { a -> shownAreas.any { it.third == a.third } }?.let { data["area"] = it.third; data["sector"] = it.second }
                         // رمز الإشعارات ليصل المواطن تنبيه عند تغيّر حالة شكواه
@@ -367,6 +377,7 @@ fun NewTab(onSent: () -> Unit) {
                             Toast.LENGTH_LONG
                         ).show()
                         title = ""; text = ""; img = null; loc = null; category = ""; area = null
+                        voiceFile?.delete(); voiceFile = null; voiceSec = 0
                         onSent()
                     } catch (e: Exception) {
                         Toast.makeText(ctx, e.message ?: "حدث خطأ", Toast.LENGTH_LONG).show()

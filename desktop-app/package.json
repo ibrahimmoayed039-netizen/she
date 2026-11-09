@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "firebase-admin": "^12.3.0"
+    "firebase-admin": "^12.3.0",
+    "sql.js": "^1.10.3"
   },
   "devDependencies": {
     "electron": "^31.3.0",
@@ -19,7 +20,18 @@
   "build": {
     "appId": "com.shakawi.desktop",
     "productName": "ComplaintsCenter",
-    "files": ["main.js", "preload.js", "renderer/**", "package.json"],
-    "win": { "target": "nsis", "signAndEditExecutable": false }
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "asarUnpack": [
+      "node_modules/sql.js/dist/*.wasm"
+    ]
   }
 }
