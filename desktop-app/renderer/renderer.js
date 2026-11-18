@@ -1107,6 +1107,7 @@ function updateChrome() {
   const cnt = (f) => list.filter(f).length;
   const setBadge = (id, n) => { const e = document.getElementById(id); if (e) { e.textContent = n; e.classList.toggle('hide', !n); } };
   setBadge('b-new', cnt((c) => c.status === 'new'));
+  setBadge('b-scan', scans.filter((x) => x.state === 'ready').length);
   setBadge('b-routed', cnt((c) => c.status === 'routed' || c.status === 'in_progress' || c.status === 'pending_review'));
   const k = document.getElementById('kpis');
   if (!k) return;
@@ -1118,6 +1119,140 @@ function updateChrome() {
     kpi('amber', cnt((c) => c.status === 'pending_review'), 'بانتظار الاعتماد'),
     kpi('red', cnt((c) => c.priority === 'urgent' && c.status !== 'resolved' && c.status !== 'new'), 'عاجلة مفتوحة'),
     kpi('green', cnt((c) => c.status === 'resolved' && c.resolvedMs >= sod.getTime()), 'منجزة اليوم'));
+}
+
+
+
+// ---------------- السكانر (مسح الشكاوى الورقية وقراءتها وتحديد نوعها) ----------------
+let scans = [], scanBusy = false, scanFolderPath = '', scanMsg = '';
+function scanOnItem(it) {
+  if (it.state === 'ready') it.dept = it.known ? it.department : '';
+  const i = scans.findIndex((x) => x.id === it.id);
+  if (i < 0) scans.unshift(it); else scans[i] = { ...scans[i], ...it };
+  updateChrome();
+  if (tab === 'scan') render();
+}
+function scanCard(it) {
+  const drop = () => { scans = scans.filter((x) => x !== it); updateChrome(); render(); };
+  if (it.state === 'processing') return h('div', { class: 'card' }, h('h3', {}, '⏳ جارٍ قراءة الورقة…'), h('small', {}, it.fileName));
+  if (it.state === 'error') return h('div', { class: 'card urgent' }, h('h3', {}, '⚠️ ' + it.fileName), h('p', {}, it.error), h('button', { class: 'act', onclick: drop }, 'إزالة'));
+  const inp = (k, ph) => h('input', { type: 'text', value: it[k] || '', placeholder: ph, oninput: (e) => { it[k] = e.target.value; } });
+  const text = h('textarea', { value: it.text || '', placeholder: 'نص الشكوى', oninput: (e) => { it.text = e.target.value; } });
+  const dept = h('select', { onchange: (e) => { it.dept = e.target.value; } },
+    h('option', { value: '' }, 'تحليل وتوجيه تلقائي'),
+    ...(settings.departments || []).map((d) => h('option', { value: d }, d)));
+  dept.value = it.dept || '';
+  const pri = h('select', { onchange: (e) => { it.priority = e.target.value; } }, ...Object.entries(PRI).map(([k, v]) => h('option', { value: k }, v)));
+  pri.value = it.priority || 'medium';
+  return h('div', { class: 'card' },
+    h('h3', {}, '📄 ' + (it.title || it.fileName)),
+    it.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + it.imageB64 }) : '',
+    it.warn ? h('p', { class: 'small' }, '⚠️ تعذّرت القراءة الآلية: ' + it.warn) : (!it.readable ? h('p', { class: 'small' }, '⚠️ لم يُقرأ النص بوضوح، اكتبه يدوياً من الصورة.') : ''),
+    it.summary ? h('p', { class: 'small' }, '🤖 ' + it.summary) : '',
+    h('label', {}, 'العنوان'), inp('title', 'عنوان الشكوى'),
+    h('label', {}, 'نص الشكوى (راجعه وصحّحه)'), text,
+    h('label', {}, 'اسم المواطن'), inp('name', ''),
+    h('label', {}, 'الهاتف'), inp('phone', ''),
+    h('label', {}, 'القسم المقترح'), dept,
+    h('label', {}, 'الأولوية'), pri,
+    h('div', {},
+      h('button', { class: 'act', onclick: async () => {
+        const r = await window.api.addComplaint({ title: it.title, text: it.text, name: it.name, phone: it.phone, department: it.dept, priority: it.priority, imageB64: it.imageB64, source: 'scan' });
+        if (r.ok) { scanMsg = 'تم حفظ الشكوى'; drop(); } else document.getElementById('log').textContent = r.error;
+      } }, 'حفظ الشكوى'),
+      h('button', { class: 'act', onclick: drop }, 'تجاهل')));
+}
+function renderScan() {
+  const top = h('div', { class: 'card' },
+    h('h3', {}, '🖨️ مسح الشكاوى الورقية'),
+    h('p', { class: 'small' }, 'امسح الورقة أو استورد صورتها؛ يقرأ النموذج النص ويحدد القسم والأولوية، ثم تراجع الشكوى وتحفظها فتدخل النظام كأي شكوى. الورقة بخط اليد قد تحتاج تصحيحاً قبل الحفظ.'),
+    h('button', { class: 'act', disabled: scanBusy, onclick: async () => {
+      scanBusy = true; scanMsg = 'بانتظار السكانر… أكمل المسح من نافذة الجهاز'; render();
+      const r = await window.api.scanAcquire();
+      scanBusy = false; scanMsg = r.ok ? 'تم المسح، جارٍ قراءة الورقة…' : (r.canceled ? '' : r.error); render();
+    } }, '🖨️ مسح من السكانر'),
+    h('button', { class: 'act', onclick: async () => {
+      const r = await window.api.scanImport();
+      scanMsg = r.ok ? 'جارٍ قراءة ' + r.count + ' صورة…' : ''; render();
+    } }, '🖼️ استيراد صور'),
+    scanMsg ? h('p', { class: 'small' }, scanMsg) : '',
+    h('p', { class: 'small' }, 'مجلد المراقبة (للسكانرات التي تحفظ في مجلد، أو لمسح عدة أوراق متتالية): ' + (scanFolderPath || 'غير محدد')),
+    h('button', { class: 'act', onclick: async () => { scanFolderPath = await window.api.scanFolder('pick'); render(); } }, '📁 اختيار مجلد'),
+    scanFolderPath ? h('button', { class: 'act', onclick: async () => { scanFolderPath = await window.api.scanFolder('clear'); render(); } }, 'إيقاف المراقبة') : '');
+  const out = [top];
+  if (!scans.length) out.push(h('div', { class: 'empty' }, 'لا توجد ورقات ممسوحة بانتظار المراجعة'));
+  scans.forEach((it) => out.push(scanCard(it)));
+  return out;
+}
+
+// ---------------- الأرشيف المحلي (قراءة وبحث في نسخة SQLite) ----------------
+const arch = { q: '', dept: 'all', status: 'all', from: '', to: '', sort: 'newest', page: 1 };
+const ARCH_SORTS = { newest: 'الأحدث أولاً', oldest: 'الأقدم أولاً', resolved: 'الأحدث إنجازاً', dept: 'حسب القسم' };
+let archToken = 0;
+const archFilter = () => ({ ...arch, from: dateMs(arch.from), to: dateMs(arch.to, true), size: 25 });
+const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+
+function archCard(c) {
+  const meta = [STATUS[c.status] || c.status, c.department, c.priority ? 'أولوية ' + (PRI[c.priority] || c.priority) : '', c.area ? 'الحي: ' + c.area : '', c.crew ? 'الكادر: ' + c.crew : ''].filter(Boolean).join(' • ');
+  const dates = (c.created_ms ? 'وصلت: ' + fmtT(c.created_ms) : '') + (c.resolved_ms ? ' • أُنجزت: ' + fmtT(c.resolved_ms) : '') + (c.rating ? ' • التقييم: ' + '⭐'.repeat(c.rating) : '');
+  return h('div', { class: 'card st-' + c.status },
+    h('h3', {}, c.title || '(بدون عنوان)'),
+    h('small', {}, meta),
+    h('p', { class: 'small' }, dates),
+    h('details', {},
+      h('summary', {}, 'عرض التفاصيل'),
+      h('p', {}, c.text || ''),
+      c.summary ? h('p', { class: 'small' }, '🤖 ملخص التحليل: ' + c.summary) : '',
+      c.voice_text ? h('p', { class: 'small' }, '🎙️ تفريغ الصوت: ' + c.voice_text) : '',
+      c.reply ? h('p', { class: 'reply' }, 'ملخص العمل: ' + c.reply) : '',
+      (c.name || c.phone) ? h('p', { class: 'small' }, '👤 ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
+      (c.has_image || c.has_voice) ? h('p', { class: 'small' }, 'الصور والتسجيلات الصوتية لا تُنسخ إلى الأرشيف المحلي، وتبقى في Firestore.') : '',
+      c.lat ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 الموقع') : '',
+      h('p', { class: 'small' }, 'رقم الشكوى: ' + c.id)));
+}
+
+function renderArchive() {
+  const box = h('div', {});
+  const token = ++archToken;
+  (async () => {
+    const st = await window.api.archiveStats();
+    if (token !== archToken) return;
+    if (!st.ok) { box.append(h('div', { class: 'empty' }, 'تعذّر فتح الأرشيف: ' + st.error)); return; }
+    const bar = h('div', { class: 'card bar' },
+      field('القسم', sel([['all', 'كل الأقسام'], ...st.byDept.map((d) => [d.k, d.k + ' (' + d.n + ')'])], arch.dept, (v) => { arch.dept = v; arch.page = 1; render(); })),
+      field('الحالة', sel([['all', 'الكل'], ...Object.entries(STATUS)], arch.status, (v) => { arch.status = v; arch.page = 1; render(); })),
+      field('من تاريخ', h('input', { type: 'date', value: arch.from, onchange: (e) => { arch.from = e.target.value; arch.page = 1; render(); } })),
+      field('إلى تاريخ', h('input', { type: 'date', value: arch.to, onchange: (e) => { arch.to = e.target.value; arch.page = 1; render(); } })),
+      field('بحث (عنوان، نص، اسم، هاتف، رد…)', textBox(arch.q, (v) => { arch.q = v; arch.page = 1; })),
+      field('الفرز', sel(Object.entries(ARCH_SORTS), arch.sort, (v) => { arch.sort = v; arch.page = 1; render(); })));
+    const info = h('div', { class: 'sum' },
+      h('span', { class: 'chip' }, 'إجمالي المؤرشف: ' + st.total),
+      st.minMs ? h('span', { class: 'chip' }, 'من ' + fmtT(st.minMs) + ' إلى ' + fmtT(st.maxMs)) : '',
+      h('span', { class: 'chip' }, 'حجم الملف: ' + fmtSize(st.size)));
+    const res = h('div', { class: 'sum' });
+    const acts = h('div', { class: 'card bar' },
+      h('button', { class: 'act', onclick: () => render() }, '🔄 تحديث'),
+      h('button', { class: 'act', onclick: async () => {
+        const r = await window.api.archiveExport(archFilter());
+        if (r.ok) res.textContent = 'تم تصدير ' + r.count + ' شكوى إلى ملف CSV يفتح في Excel';
+        else if (!r.canceled) res.textContent = 'تعذّر التصدير: ' + r.error;
+      } }, '⬇️ تصدير النتائج (Excel/CSV)'),
+      h('button', { class: 'act', onclick: () => window.api.openArchive() }, '📂 فتح مجلد ملف الأرشيف'),
+      h('span', { class: 'small' }, 'تُنسخ الشكاوى تلقائياً وتبقى هنا حتى لو حُذفت من Firebase.'));
+    box.append(bar, info, acts, res);
+    const q = await window.api.archiveQuery({ ...archFilter(), page: arch.page });
+    if (token !== archToken) return;
+    if (!q.ok) { box.append(h('div', { class: 'empty' }, 'تعذّر البحث: ' + q.error)); return; }
+    arch.page = q.page;
+    res.textContent = 'النتائج: ' + q.total + ' شكوى';
+    if (!q.rows.length) { box.append(h('div', { class: 'empty' }, 'لا توجد شكاوى مطابقة في الأرشيف')); return; }
+    const pager = () => h('div', { class: 'card pager bar' },
+      h('button', { class: 'act', disabled: q.page <= 1, onclick: () => { arch.page = q.page - 1; render(); } }, 'السابق'),
+      h('span', { class: 'small' }, 'صفحة ' + q.page + ' من ' + q.pages),
+      h('button', { class: 'act', disabled: q.page >= q.pages, onclick: () => { arch.page = q.page + 1; render(); } }, 'التالي'));
+    box.append(pager(), ...q.rows.map(archCard), pager());
+  })();
+  return [box];
 }
 
 function render() {
@@ -1132,6 +1267,8 @@ function render() {
   if (tab === 'perf') return v.append(...renderPerf());
   if (tab === 'classify') return v.append(...renderClassify());
   if (tab === 'done') return v.append(...renderDone());
+  if (tab === 'archive') return v.append(...renderArchive());
+  if (tab === 'scan') return v.append(...renderScan());
   if (tab === 'manual') return v.append(...renderManual());
   const items = list.filter((c) => (tab === 'new' ? c.status === 'new' : c.status !== 'new'));
   if (!items.length) return v.append(h('div', { class: 'empty' }, 'لا توجد شكاوى'));
@@ -1145,9 +1282,11 @@ function render() {
 
 document.getElementById('view').addEventListener('click', (e) => { if (e.target.tagName === 'IMG' && e.target.src) zoom(e.target.src); });
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.t; render(); }));
-window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual') render(); });
+window.api.onComplaints((d) => { list = d; if (tab !== 'settings' && tab !== 'manual' && tab !== 'archive' && tab !== 'scan') render(); });
 window.api.onDeptCrews((d) => { deptCrews = d; if (tab === 'crews' || tab === 'perf' || tab === 'setup') render(); });
 window.api.onStaff((d) => { staff = d; if (tab === 'report' || tab === 'crews' || tab === 'perf' || tab === 'setup') render(); });
 setInterval(() => { if (tab === 'crews') render(); }, 60000);
+window.api.onScan(scanOnItem);
+window.api.scanFolder('get').then((p) => { scanFolderPath = p; });
 window.api.onLog((m) => { document.getElementById('log').textContent = m; });
 window.api.getSettings().then((s) => { settings = s; render(); });
