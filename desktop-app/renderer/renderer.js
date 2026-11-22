@@ -33,33 +33,62 @@ function fmtD(ms) {
 // بداية العمل الفعلي: استلام الكادر، وإلا بدء المعالجة، وإلا التوجيه
 const workStart = (c) => c.crewMs || c.startedMs || c.routedMs || c.createdMs;
 
+// ---------------- تقرير مسار الشكوى: لون مميّز لكل جهة ----------------
+const ACTORS = {
+  citizen: { name: 'المواطن', ico: '👤' },
+  manager: { name: 'المدير', ico: '🧑‍💼' },
+  system: { name: 'النظام', ico: '🤖' },
+  dept: { name: 'موظف القسم', ico: '🗂️' },
+  crew: { name: 'الكادر', ico: '🚧' },
+};
+// تحديد الجهة من اسم كاتب السجل (حسابات الموظفين: كادر أو موظف قسم)
+function actorOf(by) {
+  const b = String(by || '').trim();
+  if (b === 'المواطن') return 'citizen';
+  if (b === 'المدير') return 'manager';
+  if (b === 'النظام') return 'system';
+  const s = staff.find((x) => (x.name && x.name === b) || (x.email && x.email === b));
+  return s && s.role === 'crew' ? 'crew' : 'dept';
+}
+const actorChip = (k, label) => h('span', { class: 'actor-chip act-' + k }, ACTORS[k].ico + ' ' + (label || ACTORS[k].name));
+
 function timeline(c) {
-  const rows = [
-    ['📥 وصول الشكوى', c.createdMs],
-    ['➡️ التوجيه إلى القسم', c.routedMs],
-    ['🚧 استلام الكادر' + (c.crew ? ' (' + crewLabel(c) + ')' : ''), c.crewMs],
-    ['📍 وصول الكادر إلى الموقع', c.arrivedMs],
-    ['📋 تقرير الكشف', c.assessedMs],
-    ['📦 تجهيز المواد', c.materialsReadyMs],
-    ['🔧 بدء المعالجة', c.startedMs],
-    ['🔁 إعادة فتح المواطن', c.reopenedMs],
-    ['📨 إرسال الكادر للإنجاز', c.submittedMs],
-    ['✔ اعتماد القسم', c.approvedMs],
-    ['✅ وقت الإنجاز', c.resolvedMs],
-  ].filter((r) => r[1]);
-  if (!rows.length) return '';
-  const extra = [];
+  const crewN = c.crew ? crewLabel(c) : '';
+  const ev = [
+    ['📥', 'وصول الشكوى', 'citizen', c.createdMs, c.name ? 'أرسلها: ' + c.name : ''],
+    ['➡️', 'التوجيه إلى القسم', 'system', c.routedMs, c.department || ''],
+    ['🚧', 'إسناد الشكوى للكادر', 'dept', c.crewMs, crewN ? 'استلمها: ' + crewN : ''],
+    ['📍', 'وصول الكادر إلى الموقع', 'crew', c.arrivedMs, ''],
+    ['📋', 'تقرير الكشف', 'crew', c.assessedMs, c.repairable === true ? '✅ ممكن صيانتها' + (c.materials ? ' — المواد: ' + c.materials : '') : c.repairable === false ? '❌ غير ممكن صيانتها' : ''],
+    ['📦', 'تجهيز المواد', 'manager', c.materialsReadyMs, ''],
+    ['🔧', 'بدء المعالجة', 'crew', c.startedMs, ''],
+    ['🔁', 'إعادة فتح الشكوى', 'citizen', c.reopenedMs, c.reopenReason || ''],
+    ['📨', 'إرسال الكادر للإنجاز', 'crew', c.submittedMs, c.reply || ''],
+    ['✔️', 'اعتماد القسم للإنجاز', 'manager', c.approvedMs, ''],
+    ['✅', 'إنجاز الشكوى', 'system', c.resolvedMs, c.confirmed ? 'أكّد المواطن أن المشكلة حُلّت' : ''],
+  ].filter((r) => r[3]).sort((a, b) => a[3] - b[3]);
+  if (!ev.length) return '';
+
+  const tiles = [];
+  const tile = (v, l, cls) => tiles.push(h('div', { class: 'tile' + (cls ? ' ' + cls : '') }, h('b', {}, v), h('small', {}, l)));
   if (c.resolvedMs) {
-    extra.push('⏱ مدة الإنجاز من الاستلام: ' + fmtD(c.resolvedMs - workStart(c)));
-    extra.push('⏱ المدة الكلية منذ وصول الشكوى: ' + fmtD(c.resolvedMs - c.createdMs));
+    tile(fmtD(c.resolvedMs - workStart(c)), '⏱ مدة الإنجاز من الاستلام', 'ok');
+    tile(fmtD(c.resolvedMs - c.createdMs), '⏱ المدة الكلية');
+    if (c.approvedMs && c.submittedMs) tile(fmtD(c.approvedMs - c.submittedMs), '🕵️ زمن مراجعة القسم');
   } else if (c.status !== 'new' && c.createdMs) {
-    extra.push('⏳ مضى على الشكوى: ' + fmtD(Date.now() - c.createdMs) + ' ولم تُنجز بعد');
+    tile(fmtD(Date.now() - c.createdMs), '⏳ مضى ولم تُنجز', 'warn');
+    if (c.status === 'pending_review' && c.submittedMs) tile(fmtD(Date.now() - c.submittedMs), '🔎 بانتظار الاعتماد', 'warn');
   }
-  if (c.status === 'pending_review' && c.submittedMs) extra.push('🔎 بانتظار اعتماد القسم منذ ' + fmtD(Date.now() - c.submittedMs));
-  if (c.resolvedMs && c.approvedMs && c.submittedMs) extra.push('🕵️ زمن مراجعة القسم: ' + fmtD(c.approvedMs - c.submittedMs));
-  return h('div', { class: 'small' },
-    ...rows.map((r) => h('div', {}, r[0] + ': ' + fmtT(r[1]))),
-    ...extra.map((t) => h('div', { class: c.resolvedMs ? '' : 'warn' }, t)));
+  const present = [...new Set(ev.map((e) => e[2]))];
+  return h('div', { class: 'rpt-wrap' },
+    h('div', { class: 'rpt-head' }, h('h4', {}, '📑 تقرير مسار الشكوى'), ...present.map((k) => actorChip(k))),
+    tiles.length ? h('div', { class: 'tiles rpt-tiles' }, ...tiles) : '',
+    h('div', { class: 'rpt-line' }, ...ev.map(([ico, label, k, ms, detail], i) => h('div', { class: 'rpt-ev act-' + k },
+      h('div', { class: 'rpt-dot' }, ico),
+      h('div', { class: 'rpt-card' },
+        h('div', { class: 'rpt-top' }, h('b', {}, label), actorChip(k), h('span', { class: 'small' }, fmtT(ms)),
+          i > 0 && ms - ev[i - 1][3] > 0 ? h('span', { class: 'rpt-gap' }, '+' + fmtD(ms - ev[i - 1][3])) : ''),
+        detail ? h('div', { class: 'small rpt-detail' }, detail) : '')))));
 }
 
 // شريط مراحل الشكوى: استُلمت ← وُجِّهت ← أُسندت ← الكشف ← المواد ← الإنجاز
@@ -110,13 +139,35 @@ function reviewBox(c) {
       h('button', { class: 'act', onclick: () => { if (!note.value.trim()) { note.focus(); return; } window.api.reviewReturn(c.id, note.value.trim()); } }, '↩️ إرجاع للكادر')));
 }
 
+// سجل الشكوى كتقرير ملوّن حسب الجهة مع أزرار تصفية
 function logButton(id) {
-  const box = h('div', { class: 'small' });
+  const box = h('div', { class: 'rpt-wrap hide' });
+  let items = [], only = 'all', loaded = false;
+  const draw = () => {
+    const present = [...new Set(items.map((i) => actorOf(i.by)))];
+    const shown = items.filter((i) => only === 'all' || actorOf(i.by) === only);
+    box.replaceChildren(
+      h('div', { class: 'rpt-head' }, h('h4', {}, '🕘 سجل الشكوى (' + items.length + ')'),
+        h('button', { class: 'pill' + (only === 'all' ? ' on' : ''), onclick: () => { only = 'all'; draw(); } }, 'الكل'),
+        ...present.map((k) => h('button', { class: 'pill act-' + k + (only === k ? ' on' : ''), onclick: () => { only = k; draw(); } }, ACTORS[k].ico + ' ' + ACTORS[k].name))),
+      h('div', { class: 'rpt-line' }, ...shown.map((i) => {
+        const k = actorOf(i.by);
+        return h('div', { class: 'rpt-ev act-' + k },
+          h('div', { class: 'rpt-dot' }, ACTORS[k].ico),
+          h('div', { class: 'rpt-card' },
+            h('div', { class: 'rpt-top' }, actorChip(k, ACTORS[k].name + (i.by && i.by !== ACTORS[k].name ? ' — ' + i.by : '')), h('span', { class: 'small' }, new Date(i.ms).toLocaleString('ar-IQ'))),
+            h('div', { class: 'rpt-detail' }, i.action)));
+      })));
+  };
   const btn = h('button', { class: 'act', onclick: async () => {
-    if (box.childNodes.length) { box.replaceChildren(); return; }
-    const items = await window.api.getLog(id);
-    if (!items.length) { box.append('لا يوجد سجل بعد'); return; }
-    items.forEach((i) => box.append(h('div', {}, new Date(i.ms).toLocaleString('ar-IQ') + ' — ' + i.by + ': ' + i.action)));
+    if (!box.classList.contains('hide')) { box.classList.add('hide'); return; }
+    box.classList.remove('hide');
+    if (!loaded) {
+      box.replaceChildren(h('p', { class: 'small' }, 'جارٍ التحميل…'));
+      items = await window.api.getLog(id); loaded = true;
+    }
+    if (!items.length) { box.replaceChildren(h('p', { class: 'small' }, 'لا يوجد سجل بعد')); loaded = false; return; }
+    draw();
   } }, '🕘 سجل الشكوى');
   return h('div', {}, btn, box);
 }
@@ -131,16 +182,12 @@ function priorityPicker(c) {
   return h('div', { class: 'small' }, 'تغيير الأولوية: ', sel);
 }
 
-function card(c) {
-  const urgent = c.priority === 'urgent' && c.status !== 'resolved';
-  const meta = [STATUS[c.status] || c.status, c.department, c.priority ? 'أولوية ' + PRI[c.priority] : ''].filter(Boolean).join(' • ');
-  return h('div', { class: 'card st-' + c.status + (urgent ? ' urgent' : '') },
-    h('h3', {}, (urgent ? '🚨 ' : '') + c.title),
-    h('small', {}, meta),
+function cardBody(c) {
+  return [
     c.imageB64 ? h('img', { src: 'data:image/jpeg;base64,' + c.imageB64 }) : '',
     c.voiceB64 ? voiceBox(c) : '',
     h('p', {}, c.text),
-    (c.name || c.phone) ? h('p', {}, 'المواطن: ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
+    (c.name || c.phone) ? h('p', { class: 'actor-line act-citizen' }, actorChip('citizen'), ' ' + [c.name, c.phone].filter(Boolean).join(' • ')) : '',
     c.status !== 'new' ? stageSteps(c) : '',
     reviewBox(c),
     (c.blockedReason && !c.crew && c.status !== 'resolved') ? h('p', { class: 'rep no' }, '🚫 تعذّر على الكادر ' + (c.blockedBy || '') + ': ' + c.blockedReason + ' — بانتظار إعادة الإسناد') : '',
@@ -153,7 +200,7 @@ function card(c) {
     c.dupTitle ? h('p', { class: 'rep no' }, '🔁 مكررة: تشبه شكوى سابقة («' + c.dupTitle + '»)') : '',
     c.dupCount ? h('p', { class: 'small' }, '🔁 تكررت هذه الشكوى ' + c.dupCount + ' مرة') : '',
     c.lat !== null ? h('button', { class: 'act', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 فتح الموقع على الخريطة') : '',
-    c.crew ? h('p', { class: 'rep yes' }, '🚧 الكادر المسؤول: ' + crewLabel(c)) : '',
+    c.crew ? h('p', { class: 'actor-line act-crew' }, actorChip('crew', 'الكادر المسؤول'), ' ' + crewLabel(c)) : '',
     c.afterImageB64 ? h('div', {}, h('b', {}, 'صورة بعد الصيانة:'), h('img', { src: 'data:image/jpeg;base64,' + c.afterImageB64 })) : '',
     c.rating ? h('p', {}, 'تقييم المواطن: ' + '⭐'.repeat(c.rating)) : '',
     timeline(c),
@@ -163,10 +210,57 @@ function card(c) {
       h('b', {}, c.repairable ? '✅ تقرير الموظف: ممكن صيانتها' : '❌ تقرير الموظف: غير ممكن صيانتها'),
       c.branch ? h('div', {}, 'الفرع: ' + c.branch) : '',
       (c.repairable && c.materials) ? h('div', {}, 'المواد المطلوبة: ' + c.materials) : '') : '',
-    c.reply ? h('p', { class: 'reply' }, 'رد الموظف: ' + c.reply) : '',
+    c.reply ? h('p', { class: 'actor-line act-dept' }, actorChip('dept', 'رد الموظف'), ' ' + c.reply) : '',
     c.status === 'new' ? h('button', { class: 'act', onclick: () => window.api.analyze(c.id) }, 'تحليل وتوجيه الآن') : '',
     logButton(c.id)
-  );
+  ];
+}
+
+// ---------------- بطاقة الشكوى المختصرة: تُفتح التفاصيل بالضغط ----------------
+const openCards = new Set();
+function card(c) {
+  const now = Date.now();
+  const urgent = c.priority === 'urgent' && c.status !== 'resolved';
+  const info = c.status !== 'new' ? jobInfo(c, now) : null;
+  const wrap = h('div', { class: 'card cpl st-' + c.status + (urgent ? ' urgent' : '') });
+  const body = h('div', { class: 'cpl-body' });
+  let open = openCards.has(c.id);
+  const chev = h('span', { class: 'cpl-chev' }, open ? '▾' : '◂');
+  const set = (v) => {
+    open = v; if (v) openCards.add(c.id); else openCards.delete(c.id);
+    chev.textContent = v ? '▾' : '◂';
+    wrap.classList.toggle('open', v);
+    if (v) body.replaceChildren(...cardBody(c)); else body.replaceChildren();
+  };
+  const thumb = h('div', { class: 'cpl-thumb' + (c.imageB64 ? '' : ' none') }, c.imageB64 ? '' : '📣');
+  if (c.imageB64) thumb.style.backgroundImage = 'url(data:image/jpeg;base64,' + c.imageB64 + ')';
+  const pc = c.priority === 'urgent' ? 'chip bad' : c.priority === 'high' ? 'chip warn' : 'chip';
+  const stc = c.status === 'resolved' ? 'chip ok' : (c.status === 'new' || c.status === 'pending_review') ? 'chip warn' : 'chip';
+  const flow = c.resolvedMs && c.createdMs ? '⏱ أُنجزت خلال ' + fmtD(c.resolvedMs - c.createdMs)
+    : (c.status !== 'new' && c.createdMs ? '⏳ مضى ' + fmtD(now - c.createdMs) : '');
+  const snippet = (c.text || c.aiSummary || '').replace(/\s+/g, ' ').slice(0, 120);
+  const sum = h('div', { class: 'cpl-sum', onclick: () => set(!open) },
+    thumb,
+    h('div', { class: 'cpl-main' },
+      h('b', { class: 'cpl-title' }, (urgent ? '🚨 ' : '') + c.title),
+      h('div', { class: 'cpl-chips' },
+        actorChip('citizen', (c.name || 'مواطن') + (c.phone ? ' • ' + c.phone : '')),
+        h('span', { class: stc }, STATUS[c.status] || c.status),
+        c.priority ? h('span', { class: pc }, 'أولوية ' + PRI[c.priority]) : '',
+        c.department ? h('span', { class: 'chip' }, '🏢 ' + c.department) : '',
+        c.crew ? actorChip('crew', crewLabel(c)) : '',
+        info && info.late ? h('span', { class: 'chip bad' }, '🔴 متأخر ' + fmtD(info.over)) : '',
+        c.repairable === false ? h('span', { class: 'chip bad' }, '❌ غير ممكن صيانتها') : '',
+        (c.reopenCount || c.dupTitle) ? h('span', { class: 'chip warn' }, c.reopenCount ? '🔁 أُعيد فتحها ' + c.reopenCount : '🔁 مكررة') : '',
+        c.voiceB64 ? h('span', { class: 'chip' }, '🎙️ صوت') : '',
+        c.rating ? h('span', { class: 'chip stars' }, stars(c.rating)) : ''),
+      snippet ? h('div', { class: 'small cpl-snip' }, snippet) : '',
+      h('div', { class: 'small' }, [c.createdMs ? '🕘 ' + fmtT(c.createdMs) : '', flow].filter(Boolean).join(' • '))),
+    c.status === 'new' ? h('button', { class: 'act org-btn', onclick: (e) => { e.stopPropagation(); window.api.analyze(c.id); } }, 'تحليل وتوجيه') : '',
+    chev);
+  wrap.append(sum, body);
+  if (open) { wrap.classList.add('open'); body.replaceChildren(...cardBody(c)); }
+  return wrap;
 }
 
 function renderSettings() {
@@ -924,7 +1018,7 @@ function perfRows() {
       const done = cs.filter((c) => c.status === 'resolved');
       const rated = done.filter((c) => c.rating > 0);
       rows.push({
-        dept, crew, label: crewLabel({ crew, department: dept }),
+        dept, crew, cs, label: crewLabel({ crew, department: dept }),
         assigned: cs.length, done: done.length, open: cs.length - done.length,
         rate: cs.length ? Math.round((done.length / cs.length) * 100) : null,
         dur: mean(done.filter((c) => c.resolvedMs).map((c) => c.resolvedMs - workStart(c))),
@@ -937,7 +1031,62 @@ function perfRows() {
   return rows;
 }
 
+// ---------------- أداء الكوادر: لوحة شرف وبطاقات مجسّمة بهيكل قسم ← كادر ----------------
+const pui = { open: {}, sel: null };
+const SVGNS = 'http://www.w3.org/2000/svg';
+const stars = (v) => '★'.repeat(Math.round(v)) + '☆'.repeat(5 - Math.round(v));
+
+function ring(pct, cls) {
+  const R = 32, C = 2 * Math.PI * R;
+  const svg = document.createElementNS(SVGNS, 'svg');
+  svg.setAttribute('viewBox', '0 0 80 80');
+  svg.setAttribute('class', 'ring-svg');
+  const mk = (c, dash) => {
+    const e = document.createElementNS(SVGNS, 'circle');
+    e.setAttribute('cx', '40'); e.setAttribute('cy', '40'); e.setAttribute('r', String(R));
+    e.setAttribute('class', c); e.setAttribute('fill', 'none'); e.setAttribute('stroke-width', '8');
+    if (dash !== undefined) { e.setAttribute('stroke-dasharray', dash + ' ' + C); e.setAttribute('stroke-linecap', 'round'); e.setAttribute('transform', 'rotate(-90 40 40)'); }
+    return e;
+  };
+  svg.append(mk('ring-bg'), mk('ring-fg ' + cls, (C * Math.min(100, pct)) / 100));
+  return h('div', { class: 'ring' }, svg, h('span', {}, pct + '%'));
+}
+
+function podium(rows) {
+  const top = rows.filter((r) => r.done > 0).sort((a, b) => b.done - a.done || (a.dur ?? 1e18) - (b.dur ?? 1e18)).slice(0, 3);
+  if (!top.length) return '';
+  const spot = (r, k) => h('div', { class: 'pod p' + k },
+    h('div', { class: 'pod-who' }, h('span', { class: 'pod-medal' }, ['🥇', '🥈', '🥉'][k - 1]), h('b', {}, r.label), h('small', {}, r.dept)),
+    h('div', { class: 'pod-base' }, h('b', {}, String(r.done)), h('small', {}, 'منجز')));
+  const order = [top[1] && [top[1], 2], top[0] && [top[0], 1], top[2] && [top[2], 3]].filter(Boolean);
+  return h('div', { class: 'card' }, h('h3', {}, '🏆 لوحة الشرف'), h('div', { class: 'podium' }, ...order.map(([r, k]) => spot(r, k))));
+}
+
+function perfCard(r, rank, now) {
+  const key = r.dept + '|' + r.crew;
+  const a = aggJobs(r.cs, now);
+  const selOn = pui.sel === key;
+  const tone = r.rate === null ? 'none' : r.rate >= 80 ? 'good' : r.rate >= 50 ? 'mid' : 'low';
+  const tile = (v, l, c) => h('div', { class: 'tile' + (c ? ' ' + c : '') }, h('b', {}, v), h('small', {}, l));
+  const node = { key: 'p:' + key, level: 'crew', dept: r.dept, crew: r.crew, title: r.label, cs: r.cs, agg: a, children: [] };
+  return h('div', { class: 'org-node lv-crew pf-node' },
+    h('div', { class: 'pf-card tone-' + tone + (a.late.length ? ' has-late' : '') },
+      h('div', { class: 'pf-rank' }, r.assigned ? ((r.done && ['🥇', '🥈', '🥉'][rank - 1]) || '#' + rank) : '—'),
+      ring(r.rate === null ? 0 : r.rate, tone),
+      h('div', { class: 'org-main' }, h('b', {}, '🚧 ' + r.label),
+        h('div', { class: 'org-chips' },
+          a.late.length ? h('span', { class: 'chip bad' }, '🔴 متأخر ' + a.late.length) : h('span', { class: 'chip ok' }, '🟢 بلا تأخير'),
+          r.reopened ? h('span', { class: 'chip warn' }, '🔁 أُعيد فتحها ' + r.reopened) : '',
+          r.rating !== null ? h('span', { class: 'chip stars' }, stars(r.rating) + ' ' + r.rating.toFixed(1)) : '')),
+      h('div', { class: 'tiles' },
+        tile(String(r.done), 'منجزة', 'ok'), tile(String(r.assigned), 'مُسندة'), tile(String(r.open), 'قيد العمل', r.open ? 'warn' : ''),
+        tile(r.dur === null ? '-' : fmtD(r.dur), 'متوسط الإنجاز'), tile(r.resp === null ? '-' : fmtD(r.resp), 'متوسط الاستجابة')),
+      h('button', { class: 'act org-btn' + (selOn ? ' on' : ''), onclick: () => { pui.sel = selOn ? null : key; render(); } }, selOn ? 'إخفاء التفاصيل' : 'التفاصيل')),
+    selOn ? orgDetail(node, now) : '');
+}
+
 function renderPerf() {
+  const now = Date.now();
   const bar = h('div', { class: 'card bar' },
     field('الفترة', sel(Object.entries(PERIODS), perf.from || perf.to ? '' : perf.period, (v) => { perf.period = v; perf.from = ''; perf.to = ''; render(); })),
     field('من', h('input', { type: 'date', value: perf.from, onchange: (e) => { perf.from = e.target.value; render(); } })),
@@ -946,7 +1095,6 @@ function renderPerf() {
   const rows = perfRows();
   if (!rows.length) return [bar, h('div', { class: 'empty' }, 'لا توجد كوادر معرّفة بعد')];
 
-  // الترتيب: القيم الفارغة تأتي أخيراً دائماً
   const key = perf.sort;
   rows.sort((a, b) => {
     const x = a[key], y = b[key];
@@ -954,6 +1102,7 @@ function renderPerf() {
     if (y === null || y === undefined) return -1;
     return (x - y) * perf.dir || (b.done - a.done);
   });
+  rows.forEach((r, i) => { r.rank = i + 1; });
 
   const pick = (arr, f, best) => arr.filter((r) => r[f] !== null && r[f] !== undefined && (f !== 'done' || r.done > 0))
     .sort((a, b) => (best === 'max' ? b[f] - a[f] : a[f] - b[f]))[0];
@@ -965,31 +1114,36 @@ function renderPerf() {
     resp ? h('span', { class: 'chip ok' }, '🏃 الأسرع استجابة: ' + resp.label + ' (' + fmtD(resp.resp) + ')') : '',
     rated ? h('span', { class: 'chip ok' }, '⭐ الأعلى تقييماً: ' + rated.label + ' (' + rated.rating.toFixed(1) + ')') : '');
   const tot = rows.reduce((a, r) => ({ a: a.a + r.assigned, d: a.d + r.done }), { a: 0, d: 0 });
-  const sum = h('div', { class: 'sum' },
-    h('span', { class: 'chip' }, 'الكوادر: ' + rows.length),
-    h('span', { class: 'chip' }, 'الأعمال المُسندة: ' + tot.a),
-    h('span', { class: 'chip ok' }, 'المنجزة: ' + tot.d),
-    h('span', { class: 'chip warn' }, 'قيد العمل: ' + (tot.a - tot.d)));
+  const lateAll = rows.reduce((a, r) => a + aggJobs(r.cs, now).late.length, 0);
+  const kpi = (v, l, c) => h('div', { class: 'tile big' + (c ? ' ' + c : '') }, h('b', {}, String(v)), h('small', {}, l));
+  const kp = h('div', { class: 'card' }, h('div', { class: 'tiles' },
+    kpi(rows.length, '🚧 الكوادر'), kpi(tot.a, '📋 المُسندة'), kpi(tot.d, '✅ المنجزة', 'ok'), kpi(tot.a - tot.d, '🔧 قيد العمل', 'warn'),
+    kpi(tot.a ? Math.round((tot.d / tot.a) * 100) + '%' : '-', '📈 نسبة الإنجاز'), kpi(lateAll, '🔴 متأخرة الآن', lateAll ? 'bad' : '')));
 
-  const max = Math.max(1, ...rows.map((r) => r.done));
-  const COLS = [['done', 'منجزة'], ['assigned', 'مُسندة'], ['open', 'قيد العمل'], ['rate', 'نسبة الإنجاز'], ['dur', 'متوسط زمن الإنجاز'], ['resp', 'متوسط الاستجابة'], ['rating', 'التقييم'], ['reopened', 'أُعيد فتحها']];
-  const th = (k, l) => h('th', { class: 'sortable', onclick: () => { if (perf.sort === k) perf.dir = -perf.dir; else { perf.sort = k; perf.dir = (k === 'dur' || k === 'resp') ? 1 : -1; } render(); } },
-    l + (perf.sort === k ? (perf.dir === -1 ? ' ▼' : ' ▲') : ''));
-  const medal = ['🥇', '🥈', '🥉'];
-  const table = h('table', {},
-    h('tr', {}, h('th', {}, '#'), h('th', {}, 'الكادر'), h('th', {}, 'القسم'), ...COLS.map(([k, l]) => th(k, l))),
-    ...rows.map((r, i) => h('tr', {},
-      h('td', {}, r.assigned ? (medal[i] || String(i + 1)) : String(i + 1)),
-      h('td', {}, r.label), h('td', {}, r.dept),
-      h('td', {}, r.done + ' ' + '█'.repeat(Math.round((r.done / max) * 12))),
-      h('td', {}, String(r.assigned)),
-      h('td', { class: r.open ? 'warn' : '' }, String(r.open)),
-      h('td', {}, r.rate === null ? '-' : r.rate + '%'),
-      h('td', {}, r.dur === null ? '-' : fmtD(r.dur)),
-      h('td', {}, r.resp === null ? '-' : fmtD(r.resp)),
-      h('td', {}, r.rating === null ? '-' : '⭐ ' + r.rating.toFixed(1) + ' (' + r.ratedN + ')'),
-      h('td', { class: r.reopened ? 'warn' : '' }, String(r.reopened)))));
-  return [bar, hl, sum, h('div', { class: 'card' }, h('p', { class: 'small' }, 'الأعمال المحسوبة هي المُسندة للكادر خلال الفترة. اضغط عنوان أي عمود لإعادة الترتيب. زمن الاستجابة = من الإسناد حتى وصول الكادر للموقع.'), table)];
+  const COLS = [['done', 'منجزة'], ['assigned', 'مُسندة'], ['open', 'قيد العمل'], ['rate', 'نسبة الإنجاز'], ['dur', 'متوسط الإنجاز'], ['resp', 'الاستجابة'], ['rating', 'التقييم'], ['reopened', 'أُعيد فتحها']];
+  const sorter = h('div', { class: 'card' }, h('b', {}, 'ترتيب الكوادر حسب: '),
+    h('div', { class: 'pills' }, ...COLS.map(([k, l]) => h('button', { class: 'pill' + (perf.sort === k ? ' on' : ''), onclick: () => {
+      if (perf.sort === k) perf.dir = -perf.dir; else { perf.sort = k; perf.dir = (k === 'dur' || k === 'resp') ? 1 : -1; } render();
+    } }, l + (perf.sort === k ? (perf.dir === -1 ? ' ▼' : ' ▲') : '')))),
+    h('p', { class: 'small' }, 'الأعمال المحسوبة هي المُسندة للكادر خلال الفترة. زمن الاستجابة = من الإسناد حتى وصول الكادر للموقع. الحلقة = نسبة الإنجاز.'));
+
+  const depts = [...new Set(rows.map((r) => r.dept))];
+  const tree = depts.map((dept) => {
+    const rs = rows.filter((r) => r.dept === dept);
+    const dd = rs.reduce((a, r) => ({ a: a.a + r.assigned, d: a.d + r.done }), { a: 0, d: 0 });
+    const pct = dd.a ? Math.round((dd.d / dd.a) * 100) : 0;
+    const isOpen = pui.open[dept] === undefined ? true : pui.open[dept];
+    const prog = h('div', { class: 'org-prog' }, h('i'));
+    prog.firstChild.style.width = pct + '%';
+    return h('div', { class: 'org-node lv-dept' },
+      h('div', { class: 'org-head' },
+        h('button', { class: 'org-tg', onclick: () => { pui.open[dept] = !isOpen; render(); } }, isOpen ? '▾' : '◂'),
+        h('div', { class: 'org-main' }, h('b', {}, '🏢 ' + dept), h('small', {}, rs.length + ' كادر')),
+        h('div', { class: 'org-chips' }, h('span', { class: 'chip' }, '📋 ' + dd.a), h('span', { class: 'chip ok' }, '✅ ' + dd.d), h('span', { class: 'chip warn' }, '🔧 ' + (dd.a - dd.d))),
+        prog, h('span', { class: 'small' }, pct + '%')),
+      isOpen ? h('div', { class: 'org-kids' }, ...rs.map((r) => perfCard(r, r.rank, now))) : '');
+  });
+  return [bar, kp, podium(rows), hl, sorter, h('div', { class: 'org-tree' }, ...tree)];
 }
 
 function renderBusy() {
@@ -1034,29 +1188,229 @@ function renderBusy() {
   return out;
 }
 
+// ---------------- تقارير الفروع: هيكل شجري مجسّم (قسم ← فرع ← كادر) ----------------
+// مهلة الإنجاز بالساعات حسب الأولوية: ما زاد عنها يُعدّ تأخراً (تُحسب من استلام الكادر)
+const LATE_H = { urgent: 12, high: 24, medium: 48, low: 72 };
+const lateLimit = (c) => (LATE_H[c.priority] || 48) * 3600000;
+const rpt = { open: {}, tabs: {}, sel: null, lateOnly: false };
+const crewTitle = (c) => (c.crew ? crewLabel(c) : 'غير مُسند لكادر');
+
+function jobInfo(c, now) {
+  if (c.status === 'resolved') {
+    const dur = c.resolvedMs && workStart(c) ? c.resolvedMs - workStart(c) : null;
+    const over = dur === null ? 0 : dur - lateLimit(c);
+    return { st: over > 0 ? 'doneLate' : 'done', dur, over, late: false };
+  }
+  const since = c.crew ? workStart(c) : (c.routedMs || c.createdMs);
+  const age = since ? now - since : 0;
+  const over = age - lateLimit(c);
+  let st = 'working';
+  if (c.blockedReason) st = 'blocked';
+  else if (c.status === 'pending_review') st = 'review';
+  else if (!c.crew) st = 'unassigned';
+  return { st, since, age, over, late: since > 0 && over > 0 };
+}
+
+function aggJobs(cs, now) {
+  const infos = cs.map((c) => ({ c, i: jobInfo(c, now) }));
+  const isDone = (x) => x.i.st === 'done' || x.i.st === 'doneLate';
+  const done = infos.filter(isDone), open = infos.filter((x) => !isDone(x));
+  const rated = done.filter((x) => x.c.rating > 0);
+  return {
+    infos, done, open,
+    late: open.filter((x) => x.i.late),
+    doneLate: done.filter((x) => x.i.st === 'doneLate'),
+    unassigned: open.filter((x) => x.i.st === 'unassigned'),
+    blocked: open.filter((x) => x.i.st === 'blocked'),
+    review: open.filter((x) => x.i.st === 'review'),
+    avgDur: mean(done.filter((x) => x.i.dur !== null && x.i.dur >= 0).map((x) => x.i.dur)),
+    rating: mean(rated.map((x) => x.c.rating)), ratedN: rated.length,
+    reopened: cs.reduce((a, c) => a + (c.reopenCount || 0), 0),
+    pct: cs.length ? Math.round((done.length / cs.length) * 100) : 0,
+  };
+}
+
+function buildOrg(now) {
+  const nodes = allDepts().map((dept) => {
+    const inDept = list.filter((c) => c.department === dept && c.status !== 'new');
+    const bset = new Set();
+    staff.filter((s) => s.departments.includes(dept)).forEach((s) => (s.branches || []).forEach((b) => bset.add(b)));
+    inDept.forEach((c) => { if (c.branch) bset.add(c.branch); });
+    const crewKids = (cs, base) => [...new Set(cs.map((c) => c.crew || ''))].map((k) => ({
+      key: 'c:' + base + '|' + k, level: 'crew', icon: k ? '🚧' : '⏳',
+      title: k ? crewLabel({ crew: k, department: dept }) : 'غير مُسند لكادر',
+      cs: cs.filter((c) => (c.crew || '') === k), dept, crew: k, children: [],
+    }));
+    const branches = [...bset].map((b) => {
+      const cs = inDept.filter((c) => c.branch === b);
+      return { key: 'b:' + dept + '|' + b, level: 'branch', icon: '🏬', title: b, cs, dept, children: crewKids(cs, dept + '|' + b) };
+    });
+    const nb = inDept.filter((c) => !c.branch);
+    if (nb.length) branches.push({ key: 'b:' + dept + '|~', level: 'branch', icon: '📍', title: 'بدون فرع محدد', cs: nb, dept, children: crewKids(nb, dept + '|~') });
+    return { key: 'd:' + dept, level: 'dept', icon: '🏢', title: dept, cs: inDept, dept, children: branches };
+  }).filter((d) => d.cs.length || d.children.length);
+  const fill = (n) => {
+    n.agg = aggJobs(n.cs, now);
+    n.children.forEach(fill);
+    n.children.sort((x, y) => (y.agg.late.length - x.agg.late.length) || (y.cs.length - x.cs.length));
+    const crews = new Set(n.cs.filter((c) => c.crew).map((c) => c.crew)).size;
+    if (n.level === 'dept') n.sub = n.children.length + ' فرع • ' + crews + ' كادر';
+    else if (n.level === 'branch') n.sub = crews + ' كادر عمل هنا';
+    else n.sub = [n.agg.avgDur !== null ? 'متوسط الإنجاز ' + fmtD(n.agg.avgDur) : '', n.agg.rating !== null ? '⭐ ' + n.agg.rating.toFixed(1) : ''].filter(Boolean).join(' • ');
+  };
+  nodes.forEach(fill);
+  return nodes;
+}
+
+const orgWalk = (n, f) => { f(n); n.children.forEach((k) => orgWalk(k, f)); };
+const groupByCrew = (items) => {
+  const m = new Map();
+  items.forEach((x) => { const k = crewTitle(x.c); if (!m.has(k)) m.set(k, []); m.get(k).push(x); });
+  return [...m.entries()];
+};
+
+function jobRow({ c, i }) {
+  const isDone = i.st === 'done' || i.st === 'doneLate';
+  const cls = i.st === 'done' ? 'yes' : (i.st === 'doneLate' ? 'warn' : ((i.late || i.st === 'blocked') ? 'no' : 'info'));
+  const when = isDone
+    ? 'أُنجز: ' + fmtT(c.resolvedMs) + (i.dur !== null && i.dur >= 0 ? ' • المدة ' + fmtD(i.dur) : '') + (i.st === 'doneLate' ? ' • ⚠️ تجاوز المهلة بـ ' + fmtD(i.over) : ' • ✅ ضمن المهلة')
+    : (STATUS[c.status] || c.status) + (i.since ? ' • منذ ' + fmtT(i.since) + ' • مضى ' + fmtD(i.age) : '') + (i.late ? ' • 🔴 متأخر بـ ' + fmtD(i.over) : ' • ضمن المهلة (المتبقي ' + fmtD(-i.over) + ')');
+  const mat = !isDone && c.materials && ['requested', 'preparing', 'partial'].includes(c.materialsStatus) ? MAT_AR[c.materialsStatus] : '';
+  return h('div', { class: 'rep ' + cls },
+    h('b', {}, (c.priority === 'urgent' ? '🚨 ' : '') + c.title),
+    h('div', { class: 'small' }, [crewTitle(c), c.branch ? 'الفرع: ' + c.branch : '', 'الأولوية: ' + (PRI[c.priority] || '-')].filter(Boolean).join(' • ')),
+    h('div', { class: 'small' }, when),
+    c.blockedReason ? h('div', { class: 'small' }, '🚫 تعذّر العمل: ' + c.blockedReason + (c.blockedBy ? ' (' + c.blockedBy + ')' : '')) : '',
+    mat ? h('div', { class: 'small' }, mat) : '',
+    c.returnNote && !isDone ? h('div', { class: 'small' }, '↩️ أُرجع للكادر: ' + c.returnNote) : '',
+    c.reopenCount ? h('div', { class: 'small' }, '🔁 أعاد المواطن فتحها ' + c.reopenCount + ' مرة' + (c.reopenReason ? ': ' + c.reopenReason : '')) : '',
+    isDone && c.rating > 0 ? h('div', { class: 'small' }, '⭐ تقييم المواطن: ' + c.rating) : '',
+    c.lat !== null && c.lat !== undefined ? h('button', { class: 'act org-btn', onclick: () => window.api.openMap(c.lat, c.lng) }, '📍 الموقع على الخريطة') : '');
+}
+
+// أفكار تلقائية للمدير مبنية على أرقام العقدة المفتوحة
+function ideasFor(n, now) {
+  const a = n.agg, out = [];
+  const add = (lvl, t) => out.push({ lvl, t });
+  if (!a.infos.length) { add('info', 'لا توجد أعمال مسجّلة هنا بعد، فلا معطيات كافية لاقتراحات.'); return out; }
+  const dept = n.dept;
+  const loads = {};
+  list.filter((c) => c.department === dept && c.crew && c.status !== 'resolved' && c.status !== 'new').forEach((c) => { loads[c.crew] = (loads[c.crew] || 0) + 1; });
+  const all = new Set([...deptCrewNames(dept), ...staff.filter((s) => s.role === 'crew' && s.departments.includes(dept)).map((s) => s.crew), ...Object.keys(loads)].filter(Boolean));
+  const free = [...all].filter((k) => !loads[k]);
+  const lbl = (k) => crewLabel({ crew: k, department: dept });
+
+  if (a.late.length) {
+    const g = groupByCrew(a.late).sort((x, y) => y[1].length - x[1].length)[0];
+    add('bad', '⏰ ' + a.late.length + ' عمل متأخر عن المهلة' + (n.level !== 'crew' && g ? ' — أكثرها عند «' + g[0] + '» (' + g[1].length + ')' : '') + '.');
+    add('warn', free.length ? '💡 أعد إسناد المتأخر إلى كوادر متاحة الآن: ' + free.slice(0, 4).map(lbl).join('، ') + '.' : '💡 لا كوادر متاحة حالياً: فكّر بإضافة كادر مؤقت أو تأجيل الأعمال منخفضة الأولوية.');
+  }
+  if (a.unassigned.length) add('bad', '📌 ' + a.unassigned.length + ' شكوى موجّهة للقسم ولم تُسند لأي كادر بعد — أسندها أو فعّل الإسناد التلقائي.');
+  if (a.blocked.length) add('bad', '🚫 ' + a.blocked.length + ' عمل تعذّر تنفيذه بانتظار قرارك — راجع الأسباب في تبويب «المتأخرون» وقرّر: مواد/ميزانية/تحويل لجهة أخرى.');
+  const rv = a.review.filter((x) => x.i.age > 24 * 3600000).length;
+  if (rv) add('warn', '🔎 ' + rv + ' عمل ينتظر اعتماد الإدارة منذ أكثر من يوم — اعتمده أو أرجعه للكادر ليُغلق الملف.');
+  const matN = a.open.filter((x) => x.c.materials && ['requested', 'preparing', 'partial'].includes(x.c.materialsStatus)).length;
+  if (matN) add('warn', '📦 ' + matN + ' عمل ينتظر تجهيز المواد — تأخير المخزن هو السبب المحتمل للتأخر، أسرع التجهيز.');
+  if (n.level !== 'crew') {
+    const ls = Object.values(loads);
+    if (ls.length > 1 && Math.max(...ls) - Math.min(...ls) >= 3) add('warn', '⚖️ توزيع الحمل غير متوازن بين الكوادر (من ' + Math.min(...ls) + ' إلى ' + Math.max(...ls) + ' أعمال مفتوحة) — وازن الإسناد.');
+    const cat = {};
+    n.cs.forEach((c) => { const k = c.category || 'غير مصنّفة'; cat[k] = (cat[k] || 0) + 1; });
+    const top = Object.entries(cat).sort((x, y) => y[1] - x[1])[0];
+    if (top && top[1] >= 3) add('info', '🔁 تكرار شكاوى «' + top[0] + '» (' + top[1] + ' شكوى) — فكّر بحل جذري أو صيانة وقائية بدل المعالجة المتكررة.');
+  }
+  if (a.done.length >= 3 && a.doneLate.length / a.done.length >= 0.4) add('warn', '🐢 ' + a.doneLate.length + ' من ' + a.done.length + ' أعمال أُنجزت بعد المهلة — قد تكون المهلة أو الأعداد غير كافية.');
+  if (a.reopened > 0 && a.done.length && a.reopened / a.done.length >= 0.2) add('bad', '🔁 ارتفاع إعادة فتح الشكاوى (' + a.reopened + ') — راجع جودة الإنجاز واطلب صورة «بعد» قبل الإغلاق.');
+  if (a.rating !== null && a.ratedN >= 2 && a.rating < 3) add('bad', '⭐ تقييم المواطنين منخفض (' + a.rating.toFixed(1) + ' من 5) — اجتمع مع المسؤول وراجع الملاحظات.');
+  if (a.done.length >= 3 && !a.late.length && !a.doneLate.length && !a.reopened && (a.rating === null || a.rating >= 4)) add('ok', '🏆 أداء ممتاز: ' + a.done.length + ' أعمال منجزة بلا تأخير ولا إعادة فتح — يستحق التقدير.');
+  if (!out.length) add('ok', '✅ الوضع مستقر: لا تأخير ولا ملاحظات تستدعي تدخلك الآن.');
+  return out;
+}
+
+function orgDetail(n, now) {
+  const a = n.agg;
+  const TABS = [['done', '✅ من أنجز (' + a.done.length + ')'], ['late', '⏰ المتأخرون (' + a.late.length + ')'], ['ideas', '💡 أفكار'], ['all', '📋 كل الأعمال (' + a.infos.length + ')']];
+  const cur = rpt.tabs[n.key] || (a.late.length ? 'late' : 'done');
+  const nav = h('div', { class: 'pills' }, ...TABS.map(([k, l]) => h('button', { class: 'pill' + (cur === k ? ' on' : ''), onclick: () => { rpt.tabs[n.key] = k; render(); } }, l)));
+  let body;
+  if (cur === 'done') {
+    const xs = a.done.slice().sort((x, y) => y.c.resolvedMs - x.c.resolvedMs);
+    body = !xs.length ? h('p', { class: 'small' }, 'لم يُنجز أي عمل بعد.') : h('div', {}, ...groupByCrew(xs).map(([k, g]) => {
+      const dd = g.filter((x) => x.i.dur !== null && x.i.dur >= 0).map((x) => x.i.dur);
+      const dl = g.filter((x) => x.i.st === 'doneLate').length;
+      return h('div', { class: 'org-grp' },
+        h('div', { class: 'sum' }, h('b', {}, '🚧 ' + k), h('span', { class: 'chip ok' }, '✅ ' + g.length + ' منجز'),
+          dd.length ? h('span', { class: 'chip' }, 'متوسط الزمن: ' + fmtD(mean(dd))) : '',
+          dl ? h('span', { class: 'chip warn' }, '⚠️ ' + dl + ' بعد المهلة') : ''),
+        ...g.map(jobRow));
+    }));
+  } else if (cur === 'late') {
+    const xs = a.late.slice().sort((x, y) => y.i.over - x.i.over);
+    body = !xs.length ? h('p', { class: 'small' }, '🎉 لا توجد أعمال متأخرة.') : h('div', {}, ...groupByCrew(xs).map(([k, g]) => h('div', { class: 'org-grp' },
+      h('div', { class: 'sum' }, h('b', {}, '🚧 ' + k), h('span', { class: 'chip bad' }, '🔴 ' + g.length + ' متأخر'), h('span', { class: 'chip' }, 'أقصى تأخير: ' + fmtD(Math.max(...g.map((x) => x.i.over))))),
+      ...g.map(jobRow))));
+  } else if (cur === 'ideas') {
+    body = h('div', {}, ...ideasFor(n, now).map((x) => h('div', { class: 'idea ' + x.lvl }, x.t)),
+      h('p', { class: 'small' }, 'اقتراحات آلية مبنية على أرقام هذه العقدة فقط، والقرار النهائي للمدير.'));
+  } else {
+    body = !a.infos.length ? h('p', { class: 'small' }, 'لا توجد أعمال.') : h('table', {},
+      h('tr', {}, ...['العمل', 'الكادر', 'الحالة', 'الأولوية', 'المهلة'].map((x) => h('th', {}, x))),
+      ...a.infos.slice().sort((x, y) => (y.i.late - x.i.late) || ((y.c.createdMs || 0) - (x.c.createdMs || 0))).map(({ c, i }) => h('tr', {},
+        h('td', {}, c.title), h('td', {}, crewTitle(c)), h('td', {}, STATUS[c.status] || c.status), h('td', {}, PRI[c.priority] || '-'),
+        h('td', { class: i.late || i.st === 'doneLate' ? 'warn' : '' }, i.st === 'done' ? '✅ ضمن المهلة' : i.st === 'doneLate' ? '⚠️ أُنجز متأخراً' : i.late ? '🔴 متأخر ' + fmtD(i.over) : '🟢 ضمن المهلة'))));
+  }
+  return h('div', { class: 'org-det' }, nav, body);
+}
+
+function orgNode(n, now) {
+  const a = n.agg;
+  const isOpen = rpt.open[n.key] === undefined ? n.level === 'dept' : rpt.open[n.key];
+  const selOn = rpt.sel === n.key;
+  const prog = h('div', { class: 'org-prog', title: 'نسبة الإنجاز ' + a.pct + '%' }, h('i'));
+  prog.firstChild.style.width = a.pct + '%';
+  const head = h('div', { class: 'org-head' + (a.late.length ? ' has-late' : '') },
+    n.children.length
+      ? h('button', { class: 'org-tg', title: isOpen ? 'طي' : 'فتح', onclick: () => { rpt.open[n.key] = !isOpen; render(); } }, isOpen ? '▾' : '◂')
+      : h('span', { class: 'org-tg off' }, '•'),
+    h('div', { class: 'org-main' }, h('b', {}, n.icon + ' ' + n.title), n.sub ? h('small', {}, n.sub) : ''),
+    h('div', { class: 'org-chips' },
+      h('span', { class: 'chip' }, '📋 ' + a.infos.length),
+      h('span', { class: 'chip ok' }, '✅ ' + a.done.length),
+      h('span', { class: 'chip' + (a.open.length ? ' warn' : '') }, '🔧 ' + a.open.length),
+      a.late.length ? h('span', { class: 'chip bad' }, '🔴 متأخر ' + a.late.length) : ''),
+    prog, h('span', { class: 'small' }, a.pct + '%'),
+    h('button', { class: 'act org-btn' + (selOn ? ' on' : ''), onclick: () => { rpt.sel = selOn ? null : n.key; render(); } }, selOn ? 'إخفاء التفاصيل' : 'التفاصيل'));
+  return h('div', { class: 'org-node lv-' + n.level }, head,
+    selOn ? orgDetail(n, now) : '',
+    isOpen && n.children.length ? h('div', { class: 'org-kids' }, ...n.children.map((k) => orgNode(k, now))) : '');
+}
+
 function renderReport() {
-  const stats = branchStats();
-  const crewCards = renderCrews();
-  if (!stats.length && !crewCards.length) return [h('div', { class: 'empty' }, 'لا توجد بيانات بعد')];
-  return [...stats.map((d) => {
-    const working = d.rows.filter((r) => r.open > 0).length;
-    const finished = d.rows.filter((r) => r.total > 0 && r.open === 0).length;
-    const idle = d.rows.filter((r) => r.total === 0).length;
-    return h('div', { class: 'card' },
-      h('h3', {}, d.dept),
-      h('div', { class: 'sum' },
-        h('span', { class: 'chip' }, 'عدد الفروع: ' + d.rows.length),
-        h('span', { class: 'chip warn' }, 'فروع لديها عمل متبقٍ: ' + working),
-        h('span', { class: 'chip ok' }, 'فروع أنجزت كل شكاواها: ' + finished),
-        h('span', { class: 'chip' }, 'فروع بلا شكاوى: ' + idle)),
-      d.rows.length ? h('table', {},
-        h('tr', {}, ...['الفرع', 'الشكاوى', 'المتبقي', 'المنجز', 'ممكن صيانتها', 'غير ممكن'].map((x) => h('th', {}, x))),
-        ...d.rows.map((r) => h('tr', {},
-          h('td', {}, r.branch), h('td', {}, String(r.total)),
-          h('td', { class: r.open ? 'warn' : '' }, String(r.open)),
-          h('td', {}, String(r.done)), h('td', {}, String(r.can)), h('td', {}, String(r.cant))))) : '',
-      d.noBranchTotal ? h('p', { class: 'small' }, 'شكاوى لم يُحدَّد لها فرع: ' + d.noBranchTotal + ' (المتبقي منها ' + d.noBranchOpen + ')') : '');
-  }), ...crewCards];
+  const now = Date.now();
+  let tree = buildOrg(now);
+  if (!tree.length) return [h('div', { class: 'empty' }, 'لا توجد بيانات بعد')];
+  const whole = aggJobs(tree.flatMap((d) => d.cs), now);
+  if (rpt.lateOnly) {
+    const prune = (n) => { n.children = n.children.filter((k) => k.agg.late.length); n.children.forEach(prune); };
+    tree = tree.filter((d) => d.agg.late.length);
+    tree.forEach(prune);
+  }
+  const tools = h('div', { class: 'card bar' },
+    h('button', { class: 'act', onclick: () => { tree.forEach((d) => orgWalk(d, (n) => { rpt.open[n.key] = true; })); render(); } }, '📂 فتح الكل'),
+    h('button', { class: 'act', onclick: () => { tree.forEach((d) => orgWalk(d, (n) => { rpt.open[n.key] = false; })); rpt.sel = null; render(); } }, '📁 طي الكل'),
+    h('button', { class: 'act' + (rpt.lateOnly ? ' on' : ''), onclick: () => { rpt.lateOnly = !rpt.lateOnly; render(); } }, rpt.lateOnly ? '👁 عرض الكل' : '⏰ المتأخرون فقط'),
+    h('span', { class: 'small' }, 'مهلة الإنجاز: عاجلة ' + LATE_H.urgent + ' ساعة • عالية ' + LATE_H.high + ' • متوسطة ' + LATE_H.medium + ' • منخفضة ' + LATE_H.low + ' (من استلام الكادر)'));
+  const sum = h('div', { class: 'card' },
+    h('h3', {}, '🧬 الهيكل العام: قسم ← فرع ← كادر'),
+    h('div', { class: 'sum' },
+      h('span', { class: 'chip' }, '📋 الأعمال: ' + whole.infos.length),
+      h('span', { class: 'chip ok' }, '✅ منجزة: ' + whole.done.length + (whole.doneLate.length ? ' (منها ' + whole.doneLate.length + ' متأخرة)' : '')),
+      h('span', { class: 'chip warn' }, '🔧 قيد العمل: ' + whole.open.length),
+      h('span', { class: 'chip bad' }, '🔴 متأخرة الآن: ' + whole.late.length),
+      h('span', { class: 'chip' }, '📌 غير مُسندة: ' + whole.unassigned.length)),
+    h('p', { class: 'small' }, 'اضغط ◂ لفتح الفروع والكوادر، و«التفاصيل» لمعرفة من أنجز ومن تأخر والأفكار المقترحة.'));
+  if (!tree.length) return [tools, sum, h('div', { class: 'empty' }, '🎉 لا توجد أعمال متأخرة')];
+  return [tools, sum, h('div', { class: 'org-tree' }, ...tree.map((d) => orgNode(d, now)))];
 }
 
 let draft = { title: '', text: '', name: '', phone: '', department: '', priority: 'medium', imageB64: '' };
@@ -1276,7 +1630,9 @@ function render() {
   const pg = paginate(tab, items, mainSort + '|' + items.length);
   const sortBar = h('div', { class: 'card bar' },
     field('الفرز', sel(Object.entries(MAIN_SORTS).map(([k, x]) => [k, x[0]]), mainSort, (val) => { mainSort = val; render(); })),
-    h('span', { class: 'small' }, 'الإجمالي: ' + items.length + ' شكوى'));
+    h('span', { class: 'small' }, 'الإجمالي: ' + items.length + ' شكوى'),
+    h('button', { class: 'act org-btn', onclick: () => { pg.slice.forEach((x) => openCards.add(x.id)); render(); } }, '📂 فتح تفاصيل الصفحة'),
+    h('button', { class: 'act org-btn', onclick: () => { openCards.clear(); render(); } }, '📁 طي الكل'));
   v.append(sortBar, pg.bar(), ...pg.slice.map(card), pg.bar());
 }
 
