@@ -1385,6 +1385,166 @@ function orgNode(n, now) {
     isOpen && n.children.length ? h('div', { class: 'org-kids' }, ...n.children.map((k) => orgNode(k, now))) : '');
 }
 
+// ---------------- مؤشرات هندسية مجسّمة لتقارير الفروع (SVG مجسّم: أعمدة إيزومترية + سداسي + حلقة ثلاثية الأبعاد) ----------------
+function sv(tag, attrs = {}, ...kids) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  kids.flat().forEach((x) => { if (x !== null && x !== undefined && x !== '') e.append(x); });
+  return e;
+}
+// ألوان كل مؤشر: [الوجه العلوي، الجانب المضيء، الجانب المظلل]
+const KP = {
+  blue: ['#bfdbfe', '#3b82f6', '#1e40af'],
+  green: ['#bbf7d0', '#22c55e', '#166534'],
+  orange: ['#fed7aa', '#f97316', '#9a3412'],
+  red: ['#fecaca', '#ef4444', '#991b1b'],
+  gray: ['#e2e8f0', '#94a3b8', '#475569'],
+};
+let kpUid = 0;
+const kpState = { dept: null };
+const pts = (a) => a.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+
+// عمود إيزومتري: (x,y) = الزاوية الأمامية السفلى، hh = الارتفاع
+function isoBar(x, y, hh, pal, tip) {
+  const a = 17, b = 10, st = { stroke: 'rgba(255,255,255,.45)', 'stroke-width': 1, 'stroke-linejoin': 'round' };
+  return sv('g', { class: 'kp-bar' }, sv('title', {}, tip),
+    sv('polygon', { points: pts([[x, y], [x - a, y - b], [x - a, y - b - hh], [x, y - hh]]), fill: pal[1], ...st }),
+    sv('polygon', { points: pts([[x, y], [x + a, y - b], [x + a, y - b - hh], [x, y - hh]]), fill: pal[2], ...st }),
+    sv('polygon', { points: pts([[x, y - hh], [x - a, y - b - hh], [x, y - 2 * b - hh], [x + a, y - b - hh]]), fill: pal[0], ...st }));
+}
+
+// مجموعة أعمدة الفرع على منصّة إيزومترية: (الإجمالي، منجز، قيد العمل، متأخر) من اليمين إلى اليسار
+function kpBars(n, maxV) {
+  const a = n.agg;
+  const items = [
+    ['الإجمالي', a.infos.length, KP.blue],
+    ['منجز', a.done.length, KP.green],
+    ['قيد العمل', a.open.length, KP.orange],
+    ['متأخر', a.late.length, KP.red],
+  ];
+  const W = 230, y = 150, cy = y - 10, MAXH = 92;
+  const svg = sv('svg', { viewBox: '0 0 ' + W + ' 206', class: 'kp-svg kp-iso', role: 'img', 'aria-label': 'أعمدة ' + n.title });
+  // المنصّة: معيّن بسُمك
+  const L = [20, cy], T = [W / 2, cy - 36], R = [W - 20, cy], B = [W / 2, cy + 36], th = 9;
+  svg.append(
+    sv('polygon', { points: pts([L, B, [B[0], B[1] + th], [L[0], L[1] + th]]), class: 'kp-slab-l' }),
+    sv('polygon', { points: pts([R, B, [B[0], B[1] + th], [R[0], R[1] + th]]), class: 'kp-slab-r' }),
+    sv('polygon', { points: pts([L, T, R, B]), class: 'kp-slab-t' }));
+  items.forEach(([lbl, v, pal], i) => {
+    const x = W - 56 - i * 43; // الأول عند اليمين
+    const hh = v > 0 ? Math.max(8, (v / Math.max(maxV, 1)) * MAXH) : 3;
+    svg.append(isoBar(x, y, hh, v > 0 ? pal : KP.gray, lbl + ': ' + v),
+      sv('text', { x, y: y - hh - 2 * 10 - 6, class: 'kp-t', 'text-anchor': 'middle' }, String(v)),
+      sv('text', { x, y: cy + 36 + th + 16, class: 'kp-m', 'text-anchor': 'middle' }, lbl));
+  });
+  return svg;
+}
+
+// مؤشر سداسي مُسطَّح بسُمك: يمتلئ من الأسفل بنسبة الإنجاز
+function kpHex(pct, hasData, label) {
+  const id = 'kph' + (++kpUid), cx = 60, cy = 56, R = 46, D = 11;
+  const hex = (dy, r = R) => pts([0, 1, 2, 3, 4, 5].map((k) => { const t = (-90 + 60 * k) * Math.PI / 180; return [cx + r * Math.cos(t), cy + dy + r * Math.sin(t)]; }));
+  const pal = !hasData ? KP.gray : pct >= 75 ? KP.green : pct >= 40 ? KP.blue : pct > 0 ? KP.orange : KP.red;
+  const top = cy - R, hgt = 2 * R, fillH = hgt * (hasData ? pct : 0) / 100;
+  const svg = sv('svg', { viewBox: '0 0 120 136', class: 'kp-svg kp-hex', role: 'img', 'aria-label': label + ' ' + pct + '%' });
+  svg.append(sv('title', {}, label + ': ' + (hasData ? pct + '%' : 'لا بيانات')));
+  for (let k = D; k >= 1; k -= 1) svg.append(sv('polygon', { points: hex(k), fill: pal[2] }));
+  svg.append(
+    sv('defs', {},
+      sv('clipPath', { id }, sv('polygon', { points: hex(0, R - 5) })),
+      sv('linearGradient', { id: id + 'g', x1: 0, y1: 0, x2: 0, y2: 1 },
+        sv('stop', { offset: '0', 'stop-color': pal[0] }), sv('stop', { offset: '1', 'stop-color': pal[1] }))),
+    sv('polygon', { points: hex(0), class: 'kp-hex-face', stroke: 'rgba(255,255,255,.7)', 'stroke-width': 1.5 }),
+    sv('g', { 'clip-path': 'url(#' + id + ')' },
+      sv('rect', { x: cx - R, y: top, width: 2 * R, height: hgt, class: 'kp-hex-well' }),
+      sv('rect', { x: cx - R, y: top + hgt - fillH, width: 2 * R, height: fillH, fill: 'url(#' + id + 'g)' }),
+      fillH > 0 && fillH < hgt ? sv('rect', { x: cx - R, y: top + hgt - fillH, width: 2 * R, height: 3, fill: 'rgba(255,255,255,.65)' }) : ''),
+    sv('polygon', { points: hex(0, R - 5), fill: 'none', stroke: 'rgba(15,27,61,.18)', 'stroke-width': 1 }),
+    sv('text', { x: cx, y: cy + 8, class: 'kp-big', 'text-anchor': 'middle' }, hasData ? pct + '%' : '—'),
+    sv('text', { x: cx, y: cy + 24, class: 'kp-big kp-sm', 'text-anchor': 'middle' }, 'إنجاز'));
+  return svg;
+}
+
+// حلقة إهليلجية ثلاثية الأبعاد للقسم: تتوزع الأعمال على أربع حالات
+function kpRing(segs, total) {
+  const cx = 130, cy = 72, rx = 104, ry = 50, k = 0.56, D = 16;
+  const P = (r1, r2, t) => [cx + r1 * Math.cos(t), cy + r2 * Math.sin(t)];
+  const path = (t0, t1, dy = 0) => {
+    const o0 = P(rx, ry, t0), o1 = P(rx, ry, t1), i1 = P(rx * k, ry * k, t1), i0 = P(rx * k, ry * k, t0), big = (t1 - t0) > Math.PI ? 1 : 0;
+    return 'M' + o0[0] + ',' + (o0[1] + dy) + ' A' + rx + ',' + ry + ' 0 ' + big + ' 1 ' + o1[0] + ',' + (o1[1] + dy) +
+      ' L' + i1[0] + ',' + (i1[1] + dy) + ' A' + rx * k + ',' + ry * k + ' 0 ' + big + ' 0 ' + i0[0] + ',' + (i0[1] + dy) + ' Z';
+  };
+  const arcs = [];
+  let t = -Math.PI / 2;
+  segs.filter((s) => s.v > 0).forEach((s) => {
+    const span = (s.v / total) * 2 * Math.PI;
+    if (span > Math.PI * 1.999) { arcs.push({ s, t0: t, t1: t + Math.PI }, { s, t0: t + Math.PI, t1: t + 2 * Math.PI }); } else arcs.push({ s, t0: t, t1: t + span });
+    t += span;
+  });
+  const svg = sv('svg', { viewBox: '0 0 260 ' + (cy + ry + D + 14), class: 'kp-svg kp-ring', role: 'img', 'aria-label': 'توزيع أعمال القسم' });
+  if (!arcs.length) arcs.push({ s: { pal: KP.gray, name: 'لا أعمال', v: 0 }, t0: -Math.PI / 2, t1: Math.PI * 0.5 }, { s: { pal: KP.gray, name: 'لا أعمال', v: 0 }, t0: Math.PI * 0.5, t1: Math.PI * 1.5 });
+  for (let d = D; d >= 1; d -= 2) arcs.forEach((x) => svg.append(sv('path', { d: path(x.t0, x.t1, d), fill: x.s.pal[2] })));
+  arcs.forEach((x) => svg.append(sv('path', { d: path(x.t0, x.t1), fill: x.s.pal[1], stroke: 'rgba(255,255,255,.75)', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, sv('title', {}, x.s.name + ': ' + x.s.v))));
+  // لمعة على الحافة العلوية
+  svg.append(sv('ellipse', { cx, cy, rx: rx - 2, ry: ry - 1, fill: 'none', stroke: 'rgba(255,255,255,.35)', 'stroke-width': 1.2 }),
+    sv('text', { x: cx, y: cy + 4, class: 'kp-big', 'text-anchor': 'middle' }, String(total)),
+    sv('text', { x: cx, y: cy + 19, class: 'kp-m', 'text-anchor': 'middle' }, 'إجمالي الأعمال'));
+  return svg;
+}
+
+const kpDot = (color, text, val) => {
+  const d = h('i', { class: 'kp-dot' });
+  d.style.background = color;
+  return h('div', { class: 'kp-leg' }, d, h('span', {}, text), h('b', {}, String(val)));
+};
+
+function kpTile(n, maxV) {
+  const a = n.agg, has = a.infos.length > 0;
+  const onTime = a.done.length ? Math.round(((a.done.length - a.doneLate.length) / a.done.length) * 100) : null;
+  return h('div', { class: 'kp-tile' + (a.late.length ? ' has-late' : '') },
+    h('div', { class: 'kp-tile-h' }, h('b', {}, n.icon + ' ' + n.title), h('small', {}, n.sub || '')),
+    h('div', { class: 'kp-tile-b' }, kpHex(a.pct, has, n.title), kpBars(n, maxV)),
+    h('div', { class: 'kp-foot' },
+      onTime !== null ? h('span', { class: 'chip' + (onTime >= 70 ? ' ok' : ' warn') }, '⏱ ضمن المهلة ' + onTime + '%') : '',
+      a.avgDur !== null ? h('span', { class: 'chip' }, 'متوسط الإنجاز ' + fmtD(a.avgDur)) : '',
+      a.rating !== null ? h('span', { class: 'chip' }, '⭐ ' + a.rating.toFixed(1)) : '',
+      a.unassigned.length ? h('span', { class: 'chip warn' }, '📌 غير مُسندة ' + a.unassigned.length) : ''));
+}
+
+function kpDashboard(tree) {
+  const depts = tree.filter((d) => d.children.length);
+  if (!depts.length) return '';
+  if (!kpState.dept || !depts.some((d) => d.dept === kpState.dept)) kpState.dept = depts[0].dept;
+  const d = depts.find((x) => x.dept === kpState.dept), a = d.agg;
+  const maxV = Math.max(1, ...d.children.map((b) => b.agg.infos.length));
+  const segs = [
+    { name: 'منجز ضمن المهلة', v: a.done.length - a.doneLate.length, pal: KP.green },
+    { name: 'منجز بعد المهلة', v: a.doneLate.length, pal: KP.blue },
+    { name: 'قيد العمل ضمن المهلة', v: a.open.length - a.late.length, pal: KP.orange },
+    { name: 'متأخر الآن', v: a.late.length, pal: KP.red },
+  ];
+  const pills = h('div', { class: 'pills' }, ...depts.map((x) => h('button', { class: 'pill' + (x.dept === kpState.dept ? ' on' : ''), onclick: () => { kpState.dept = x.dept; render(); } }, '🏢 ' + x.title)));
+  const cols = [['الإجمالي', KP.blue], ['منجز', KP.green], ['قيد العمل', KP.orange], ['متأخر', KP.red]];
+  const keyRow = h('div', { class: 'kp-key' }, ...cols.map(([t, p]) => { const e = kpDot(p[1], t, ''); e.lastChild.remove(); return e; }));
+  return h('div', { class: 'card kp-card' },
+    h('h3', {}, '📐 مؤشرات الفروع الهندسية'),
+    h('p', { class: 'small' }, 'كل فرع يُعرض بمؤشر سداسي لنسبة الإنجاز وأعمدة مجسّمة للأعمال. الفروع الأكثر تأخراً تظهر أولاً، وأطوال الأعمدة متناسبة داخل القسم الواحد.'),
+    pills,
+    h('div', { class: 'kp-dept' },
+      h('div', { class: 'kp-ring-box' }, kpRing(segs, a.infos.length),
+        h('div', { class: 'kp-legs' }, ...segs.map((s) => kpDot(s.pal[1], s.name, s.v)))),
+      h('div', { class: 'kp-dept-info' },
+        h('h4', {}, d.icon + ' ' + d.title),
+        h('div', { class: 'small' }, d.sub),
+        h('div', { class: 'sum' },
+          h('span', { class: 'chip ok' }, '✅ إنجاز القسم ' + a.pct + '%'),
+          h('span', { class: 'chip' + (a.late.length ? ' bad' : '') }, '🔴 متأخر ' + a.late.length),
+          a.avgDur !== null ? h('span', { class: 'chip' }, 'متوسط الإنجاز ' + fmtD(a.avgDur)) : '',
+          a.rating !== null ? h('span', { class: 'chip' }, '⭐ ' + a.rating.toFixed(1)) : ''),
+        keyRow)),
+    h('div', { class: 'kp-grid' }, ...d.children.map((b) => kpTile(b, maxV))));
+}
+
 function renderReport() {
   const now = Date.now();
   let tree = buildOrg(now);
@@ -1409,8 +1569,9 @@ function renderReport() {
       h('span', { class: 'chip bad' }, '🔴 متأخرة الآن: ' + whole.late.length),
       h('span', { class: 'chip' }, '📌 غير مُسندة: ' + whole.unassigned.length)),
     h('p', { class: 'small' }, 'اضغط ◂ لفتح الفروع والكوادر، و«التفاصيل» لمعرفة من أنجز ومن تأخر والأفكار المقترحة.'));
-  if (!tree.length) return [tools, sum, h('div', { class: 'empty' }, '🎉 لا توجد أعمال متأخرة')];
-  return [tools, sum, h('div', { class: 'org-tree' }, ...tree.map((d) => orgNode(d, now)))];
+  const kpi = kpDashboard(buildOrg(now));
+  if (!tree.length) return [tools, sum, kpi, h('div', { class: 'empty' }, '🎉 لا توجد أعمال متأخرة')];
+  return [tools, sum, kpi, h('div', { class: 'org-tree' }, ...tree.map((d) => orgNode(d, now)))];
 }
 
 let draft = { title: '', text: '', name: '', phone: '', department: '', priority: 'medium', imageB64: '' };

@@ -33,6 +33,8 @@ import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -103,6 +105,53 @@ fun priorityAr(p: String): String = when (p) {
     "medium" -> "متوسطة"
     "low" -> "منخفضة"
     else -> "-"
+}
+
+/** سطر في سجل الشكوى مع تصنيف الجهة التي كتبته: citizen / manager / system / crew / dept */
+data class LogRow(val time: String, val by: String, val action: String, val actor: String)
+
+/** تحديد الجهة: المواطن والمدير والنظام بالاسم، وحسابي أنا حسب وضعي، والبقية من صياغة الإجراء (قواعد Firestore لا تسمح بحقل دور إضافي) */
+fun logActor(by: String, action: String, crewMode: Boolean): String {
+    val b = by.trim()
+    if (b == "المواطن") return "citizen"
+    if (b == "المدير") return "manager"
+    if (b == "النظام") return "system"
+    val mine = b.isNotEmpty() && (b == myDisplayName || b == FirebaseAuth.getInstance().currentUser?.email)
+    if (mine) return if (crewMode) "crew" else "dept"
+    val crewWords = listOf("وصل الكادر", "استلم الكادر", "تقرير الصيانة", "أنجز العمل وأرسله لاعتماد القسم", "تعذّر العمل", "بدأ الكادر")
+    return if (crewWords.any { action.contains(it) }) "crew" else "dept"
+}
+
+/** ألوان كل جهة: (الخلفية، اللون المميّز للشريط والاسم، التسمية، الأيقونة) */
+fun logStyle(actor: String): List<Any> = when (actor) {
+    "citizen" -> listOf(Color(0xFFE3F0FF), Color(0xFF1E6FD9), "المواطن", "👤")
+    "manager" -> listOf(Color(0xFFEFE5FF), Color(0xFF7A3FD1), "المدير", "🧑‍💼")
+    "crew" -> listOf(Color(0xFFFFEBD6), Color(0xFFE07B12), "الكادر", "🚧")
+    "dept" -> listOf(Color(0xFFDDF5E8), Color(0xFF168457), "موظف القسم", "🗂️")
+    else -> listOf(Color(0xFFE9EDF0), Color(0xFF55737D), "النظام", "🤖")
+}
+
+@Composable
+fun LogCard(r: LogRow) {
+    val st = logStyle(r.actor)
+    val bg = st[0] as Color
+    val accent = st[1] as Color
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp).height(IntrinsicSize.Min)
+            .clip(shape)
+            .background(bg)
+    ) {
+        Box(Modifier.width(6.dp).fillMaxHeight().background(accent))
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text((st[3] as String) + " " + (st[2] as String), color = accent, style = MaterialTheme.typography.labelLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                if (r.by.isNotBlank() && r.by != st[2]) Text("(" + r.by + ")", color = accent.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall)
+            }
+            Text(r.action, color = Color(0xFF14262C), style = MaterialTheme.typography.bodySmall)
+            Text(r.time, color = Color(0xFF55737D), style = MaterialTheme.typography.labelSmall)
+        }
+    }
 }
 
 /** سجل الشكوى: من فعل ماذا ومتى (مجموعة فرعية log داخل الشكوى) */
@@ -631,7 +680,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
     // وعند عدم وجود كادر مُسنَد يعمل موظف القسم كل شيء بنفسه كما كان.
     val canReport = crewMode || c.crew.isBlank()
     val canComplete = crewMode || c.crew.isBlank() || showDirect
-    var history by remember { mutableStateOf(listOf<String>()) }
+    var history by remember { mutableStateOf(listOf<LogRow>()) }
     DisposableEffect(c.id) {
         val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.US)
         val reg = FirebaseFirestore.getInstance().collection("complaints").document(c.id).collection("log")
@@ -639,7 +688,9 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
             .addSnapshotListener { s, _ ->
                 if (s != null) history = s.documents.map {
                     val t = it.getTimestamp("at")?.toDate()?.let { d -> fmt.format(d) } ?: "..."
-                    "$t — ${it.getString("by") ?: ""}: ${it.getString("action") ?: ""}"
+                    val by = it.getString("by") ?: ""
+                    val act = it.getString("action") ?: ""
+                    LogRow(t, by, act, logActor(by, act, crewMode))
                 }
             }
         onDispose { reg.remove() }
@@ -828,7 +879,7 @@ fun Detail(c: Complaint, branches: List<String>, crews: List<String>, busyCrews:
                 if (err.isNotBlank()) Alert(err)
                 if (history.isNotEmpty()) {
                     Text("سجل الشكوى", style = MaterialTheme.typography.titleSmall)
-                    history.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    history.forEach { LogCard(it) }
                 }
             }
         },

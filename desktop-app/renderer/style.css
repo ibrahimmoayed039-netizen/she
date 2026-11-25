@@ -338,3 +338,41 @@ button.act.on{background:linear-gradient(180deg,#f59e0b,#c2410c);box-shadow:0 4p
 .cpl-body{padding:0 18px}
 .card.cpl.open .cpl-body{padding:6px 18px 18px;border-top:1px dashed var(--border);background:var(--surface2)}
 .cpl-body:empty{display:none}
+
+/* ---- مؤشرات الفروع الهندسية المجسّمة ---- */
+.kp-card:hover{transform:none}
+.kp-dept{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:14px 0 6px;padding:16px;border-radius:18px;
+  background:linear-gradient(180deg,var(--surface2),var(--surface));box-shadow:var(--inset);border:1px solid var(--border)}
+.kp-ring-box{flex:0 0 300px;max-width:100%}
+.kp-dept-info{flex:1;min-width:240px}
+.kp-dept-info h4{margin:0 0 4px;font-size:20px}
+.kp-legs{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;margin-top:6px}
+.kp-key{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.kp-leg{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
+.kp-leg b{margin-inline-start:auto;color:var(--text)}
+.kp-dot{width:12px;height:12px;border-radius:4px;flex:0 0 12px;box-shadow:0 2px 0 rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.6)}
+.kp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px;margin-top:14px}
+.kp-tile{padding:14px 14px 12px;border-radius:18px;border:1px solid var(--border);background:linear-gradient(180deg,var(--surface),var(--surface2));
+  box-shadow:var(--sh),var(--hl);transition:transform .18s ease,box-shadow .18s ease}
+.kp-tile:hover{transform:translateY(-3px);box-shadow:var(--sh-up),var(--hl)}
+.kp-tile.has-late{border-color:#f87171;box-shadow:0 10px 26px rgba(220,38,38,.18),var(--sh),var(--hl)}
+.kp-tile-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:4px}
+.kp-tile-h b{font-size:16px}
+.kp-tile-h small{color:var(--muted);font-size:12px}
+.kp-tile-b{display:flex;align-items:center;justify-content:center;gap:10px;direction:ltr}
+.kp-hex{flex:0 0 118px;width:118px;filter:drop-shadow(0 10px 8px rgba(15,27,61,.28))}
+.kp-iso{flex:1;min-width:0;max-width:270px;filter:drop-shadow(0 8px 6px rgba(15,27,61,.22))}
+.kp-ring{width:100%;max-width:300px;filter:drop-shadow(0 14px 10px rgba(15,27,61,.3))}
+.kp-foot{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.kp-svg text{font-family:inherit}
+.kp-t{fill:var(--text);font-size:13px;font-weight:bold;stroke:var(--surface);stroke-width:3px;paint-order:stroke}
+.kp-m{fill:var(--muted);font-size:10.5px}
+.kp-big{fill:var(--text);font-size:25px;font-weight:bold;stroke:var(--surface);stroke-width:3.5px;paint-order:stroke}
+.kp-big.kp-sm{font-size:11px;font-weight:normal;stroke-width:3px}
+.kp-ring .kp-big{font-size:26px}
+.kp-hex-face{fill:var(--surface)}
+.kp-hex-well{fill:var(--surface2)}
+.kp-slab-t{fill:var(--surface2);stroke:var(--border);stroke-width:1.2}
+.kp-slab-l{fill:#c3cfe8}.kp-slab-r{fill:#a9b8d9}
+@media (prefers-color-scheme:dark){.kp-slab-l{fill:#26356b}.kp-slab-r{fill:#1b2754}}
+.kp-bar{cursor:default}
